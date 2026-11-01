@@ -59,3 +59,18 @@ assert.strictEqual(R.duplicado(ex("MARCOS PEREIRA"), c2, usados), true);
 assert.strictEqual(R.duplicado(ex("MARCOS PEREIRA"), c2, usados), false);
 assert.strictEqual(R.duplicado(ex("CARLOS SOUZA"), c2, new Set()), false);
 console.log("extrato: tudo certo");
+// cerâmica e fornecedores
+{
+  const c3 = { cats: [{ id: "t", nome: "Compra de tijolo (cerâmica)", escopo: "empresa" }], regras: [], pessoas: [], fin: {}, movs: [], ajudantes: [], info: {}, faltas: [],
+    cargas: [{ id: "a", data: "2026-10-25", ceramica: "anapolina", entregas: [{ mil: 4, preco: 2500, medida: "14x19x29" }] }, { id: "b", data: "2026-11-10", ceramica: "anapolina", entregas: [{ mil: 5, preco: 2000, medida: "09x19x29" }, { mil: 2, preco: 900, medida: "5x9x19" }] }],
+    admin: { a: { custos: [2000] }, b: { custos: [1500, 0] } } };
+  const r = R.classificar({ tipo: "saida", contraparte: "CERAMICA ANAPOLINA LTDA", valor: 8000, quando: Date.now(), origem: "notificacao" }, c3);
+  assert.deepStrictEqual([r.categoria_id, r.fornecedor], ["t", "anapolina"]);
+  c3.movs.push({ tipo: "saida", valor: 5000, categoria_id: "t", fornecedor: "anapolina", quando: new Date("2026-10-28T10:00:00").toISOString() });
+  const f = R.fornecedores(c3, "2026-10-20", "2026-11-30", "2026-11-01").anapolina;
+  assert.deepStrictEqual([f.mil, f.custo, f.custoEntregue, f.custoAgendado, f.pago, f.deveAgora, f.deveTudo, f.semCusto.length], [11, 15500, 8000, 7500, 5000, 3000, 10500, 1]);
+  // pix anotado à mão conta como recebido
+  c3.fin["a|0"] = { situacao: "pix_manual", pago_em: "2026-10-26" };
+  assert.strictEqual(R.entregasAbertas(c3).some(x => x.carga.id === "a"), false);
+  console.log("fornecedores: tudo certo");
+}

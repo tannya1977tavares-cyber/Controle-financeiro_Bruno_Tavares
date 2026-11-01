@@ -37,7 +37,7 @@ const ler = (k, p) => { try { const v = JSON.parse(localStorage.getItem(k)); ret
 const gravar = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
 
 /* ---------- estado ---------- */
-let L = Object.assign({ tab: "inicio", mes: hojeS().slice(0, 7), semana: R.segunda(hojeS()), filtro: "todos", desde: addDias(hojeS(), -7), alertaFechado: 0, pessoa: null }, ler("fin-local", {}));
+let L = Object.assign({ tab: "inicio", mes: hojeS().slice(0, 7), semana: R.segunda(hojeS()), filtro: "todos", desde: addDias(hojeS(), -7), alertaFechado: 0, pessoa: null, levOk: false, levMes: addMes(hojeS().slice(0, 7), -1), vistaCargas: "cargas", fornDe: addDias(hojeS(), -14), fornAte: addDias(hojeS(), 30) }, ler("fin-local", {}));
 const salvarLocal = () => gravar("fin-local", L);
 if (!ler("fin-local", null)) salvarLocal(); // guarda a data de início na primeira vez
 let D = vazio();
@@ -85,7 +85,7 @@ async function inserirMovs(lista) {
   const novos = [];
   for (const m of lista) {
     const c = R.classificar(m, ctx());
-    const row = Object.assign(linhaMov(m, m.origem), { categoria_id: c.categoria_id || null, escopo: c.escopo || null, carga_id: c.carga_id || null, entrega_idx: c.entrega_idx ?? null, pessoa_id: c.pessoa_id || null, pendente: !!c.pendente });
+    const row = Object.assign(linhaMov(m, m.origem), { categoria_id: c.categoria_id || null, escopo: c.escopo || null, carga_id: c.carga_id || null, entrega_idx: c.entrega_idx ?? null, pessoa_id: c.pessoa_id || null, fornecedor: c.fornecedor || null, pendente: !!c.pendente });
     novos.push(row);
     D.movs.push(Object.assign({ id: "tmp" + novos.length }, row));
   }
@@ -147,12 +147,18 @@ async function conferirPagamento(cid, i, dia) {
   await marcarTijolos(cid, i, "Pago", true);
 }
 
-async function situacaoEntrega(cid, i, situacao, vencimento) {
-  const row = { carga_id: cid, idx: i, situacao, pago_em: situacao === "dinheiro" ? hojeS() : null, vencimento: vencimento || null, atualizado_em: new Date().toISOString() };
+async function situacaoEntrega(cid, i, situacao, vencimento, pagoEm) {
+  if (situacao === "aberto") {
+    const r = await sb.from("fin_entregas").delete().eq("carga_id", cid).eq("idx", i);
+    if (r.error) { erro = "Não deu pra salvar. Confira a internet."; render(); return; }
+    delete D.fin[cid + "|" + i]; await marcarTijolos(cid, i, "A receber", false); await agendarLembretes(); return;
+  }
+  const pago = R.FORA.includes(situacao);
+  const row = { carga_id: cid, idx: i, situacao, pago_em: pago ? (pagoEm || hojeS()) : null, vencimento: vencimento || null, atualizado_em: new Date().toISOString() };
   const r = await sb.from("fin_entregas").upsert(row);
   if (r.error) { erro = "Não deu pra salvar. Confira a internet."; render(); return; }
   D.fin[cid + "|" + i] = row;
-  if (situacao === "dinheiro") await marcarTijolos(cid, i, "Pago", true);
+  if (pago) await marcarTijolos(cid, i, "Pago", true);
   if (situacao === "prazo") await marcarTijolos(cid, i, "Fiado", false);
   await agendarLembretes();
 }
@@ -237,6 +243,15 @@ function ajudantesHtml(c) {
     '<p class="hint">R$ 150 cada · R$ 300 se descarregou sozinho · até R$ 400 com muitas entregas.</p><div class="btns"><button class="pri" data-acao="aj-salvar" data-carga="' + c.id + '">Salvar</button><button data-acao="aj-ninguem" data-carga="' + c.id + '">Ninguém foi</button></div></div>';
 }
 
+function chipEntrega(c, i) {
+  const s = D.fin[c.id + "|" + i], pago = R.pagoEntrega(ctx(), c.id, i);
+  if (s && s.situacao === "dinheiro") return '<span class="chip green">Dinheiro ' + diaCurto(s.pago_em) + "</span>";
+  if (s && (s.situacao === "pix" || s.situacao === "pix_manual")) return '<span class="chip green">Pix ' + diaCurto(s.pago_em) + "</span>";
+  if (s && s.situacao === "prazo") return '<span class="chip amber">Prazo ' + diaCurto(s.vencimento) + "</span>";
+  if (pago > 0) return '<span class="chip amber">Pagou ' + brl0(pago) + "</span>";
+  return '<span class="chip red">A receber</span>';
+}
+
 /* ---------- telas ---------- */
 function vInicio() {
   const cx = ctx(), al = R.alertas(cx, Date.now(), L.desde), aj = R.cargasSemAjudante(cx, hojeS(), L.desde);
@@ -249,6 +264,7 @@ function vInicio() {
   if (NATIVO && !liberado) h += '<section class="card red"><h2>Falta liberar a leitura das notificações</h2><ol class="passos"><li>Toque em <b>Abrir ajustes</b> e ative <b>Financeiro Tavares</b>.</li><li>Se o Android disser que é uma <b>configuração restrita</b>: toque em <b>Info do app</b>, depois nos <b>três pontinhos</b> lá em cima, em <b>Permitir configurações restritas</b>, e volte no passo 1.</li></ol><div class="btns"><button class="pri" data-acao="liberar">Abrir ajustes</button><button data-acao="info-app">Info do app</button></div></section>';
   if (al.length) h += '<section class="card red" data-acao="abrir-alertas" style="cursor:pointer"><h2 style="color:var(--danger)">' + al.length + (al.length > 1 ? " entregas sem recebimento" : " entrega sem recebimento") + '</h2><p>Toque pra dizer se o cliente pagou em dinheiro ou se você deu prazo.</p></section>';
   if (aj.length) h += ajudantesHtml(aj[0]) + (aj.length > 1 ? '<p class="hint">Mais ' + (aj.length - 1) + " carga(s) esperando os ajudantes.</p>" : "");
+  if (!L.levOk) h += '<section class="card warn"><h2>Levantamento das últimas semanas</h2><p>Vamos acertar as cargas das últimas 2 semanas e lançar os gastos do mês passado. Depois é só o app ficar de olho nas notificações.</p><div class="btns"><button class="pri" data-acao="lev-abrir">Começar</button></div></section>';
   if (pend.length) h += '<h2 style="margin-top:16px">Preciso de você (' + pend.length + ")</h2>" + pend.slice(0, 3).map(perguntaHtml).join("") + (pend.length > 3 ? '<p class="hint">Mais ' + (pend.length - 3) + " depois dessas.</p>" : "");
   h += navMes("mes-inicio") +
     '<section class="card"><h2>Empresa</h2><div class="stats"><div class="stat"><div class="l">Entrou</div><div class="v pos">' + brl0(r.entEmp) + '</div></div><div class="stat"><div class="l">Saiu</div><div class="v neg">' + brl0(r.saiEmp) + '</div></div><div class="stat"><div class="l">Sobrou</div><div class="v">' + brl0(r.resultadoEmp) + '</div></div><div class="stat"><div class="l">Falta receber</div><div class="v" style="color:var(--warn)">' + brl0(aReceber) + "</div></div></div>" + (fiado ? '<p class="hint">Fiado com prazo: ' + brl0(fiado) + "</p>" : "") + "</section>" +
@@ -258,12 +274,36 @@ function vInicio() {
 }
 
 function vCargas() {
+  const seg = '<div class="filtros">' + [["cargas", "Cargas"], ["forn", "Fornecedores"]].map(([k, t]) => '<button aria-pressed="' + (L.vistaCargas === k) + '" data-acao="vista-cargas" data-v="' + k + '">' + t + "</button>").join("") + "</div>";
+  if (L.vistaCargas === "forn") return seg + vForn();
+  return seg + vCargasLista();
+}
+
+function vForn() {
+  const hoje = hojeS(), fs = R.fornecedores(ctx(), L.fornDe, L.fornAte, hoje);
+  const lista = Object.values(fs).filter(f => f.cargas.length || f.pagos.length);
+  let h = '<div class="grid2"><div class="field"><label for="forn-de">De</label><input type="date" id="forn-de" value="' + L.fornDe + '"></div><div class="field"><label for="forn-ate">Até</label><input type="date" id="forn-ate" value="' + L.fornAte + '"></div></div>' +
+    '<div class="filtros"><button data-acao="forn-periodo" data-p="2s">Últimas 2 semanas</button><button data-acao="forn-periodo" data-p="mes">Este mês</button><button data-acao="forn-periodo" data-p="mesant">Mês passado</button></div>';
+  if (!lista.length) return h + '<p class="muted">Nenhuma carga nem pagamento à cerâmica nesse período.</p><div class="btns"><button class="pri" data-acao="pagar-forn" data-f="anapolina">Registrar pagamento à cerâmica</button></div>';
+  return h + lista.map(f => '<section class="card"><h2>' + esc(f.nome) + "</h2>" +
+    '<p class="muted">' + f.cargas.length + " carga(s) · " + String(f.mil).replace(".", ",") + " milheiros</p>" +
+    '<div class="btns" style="margin-top:4px">' + Object.entries(f.medidas).map(([m, v]) => '<span class="chip">' + esc(m) + ": " + String(v).replace(".", ",") + " mil</span>").join("") + "</div>" +
+    '<div class="stats"><div class="stat"><div class="l">Tijolo já entregue</div><div class="v">' + brl0(f.custoEntregue) + '</div></div><div class="stat"><div class="l">Agendado (vai passar)</div><div class="v" style="color:var(--warn)">' + brl0(f.custoAgendado) + '</div></div><div class="stat"><div class="l">Já pago</div><div class="v pos">' + brl0(f.pago) + '</div></div><div class="stat"><div class="l">Deve agora</div><div class="v ' + (f.deveAgora > 0 ? "neg" : "pos") + '">' + brl0(f.deveAgora) + "</div></div></div>" +
+    '<p class="hint">Contando as agendadas, o total a passar é ' + brl0(f.deveTudo) + ".</p>" +
+    (f.semCusto.length ? '<div class="errmsg">' + f.semCusto.length + " entrega(s) sem preço de custo no app da Tijolos (" + esc(f.semCusto.map(x => (x.e.medida || "?") + " em " + diaCurto(x.c.data)).join(", ")) + "). Corrija lá pra conta ficar certa.</div>" : "") +
+    "<details><summary class=\"muted\">Ver cargas e pagamentos</summary>" +
+    f.cargas.sort((a, b) => a.c.data.localeCompare(b.c.data)).map(o => '<div class="row"><span class="grow trunc">' + diaCurto(o.c.data) + " · " + esc(o.c.entregas.map(e => e.cliente || "Sem nome").join(", ")) + (o.futura ? ' <span class="chip amber">agendada</span>' : "") + "</span><span>" + String(o.mil).replace(".", ",") + " mil · " + brl0(o.custo) + "</span></div>").join("") +
+    (f.pagos.length ? '<h3 style="margin-top:10px">Pagamentos</h3>' + f.pagos.map(linhaMovHtml).join("") : "") + "</details>" +
+    '<div class="btns"><button class="pri" data-acao="pagar-forn" data-f="' + f.chave + '">Registrar pagamento</button></div></section>').join("");
+}
+
+function vCargasLista() {
   const cx = ctx(), lista = D.cargas.filter(c => c.data.slice(0, 7) === L.mes).sort((a, b) => b.data.localeCompare(a.data));
   return navMes("mes") + (lista.length ? lista.map(c => {
     const r = R.resumoCarga(cx, c);
     const ent = c.entregas.map((e, i) => {
       const s = D.fin[c.id + "|" + i], pago = R.pagoEntrega(cx, c.id, i), tot = R.totalEntrega(e);
-      const chip = s && s.situacao === "dinheiro" ? '<span class="chip green">Dinheiro ' + diaCurto(s.pago_em) + "</span>" : s && s.situacao === "pix" ? '<span class="chip green">Pix ' + diaCurto(s.pago_em) + "</span>" : s && s.situacao === "prazo" ? '<span class="chip amber">Prazo ' + diaCurto(s.vencimento) + "</span>" : pago > 0 ? '<span class="chip amber">Pagou ' + brl0(pago) + "</span>" : '<span class="chip red">A receber</span>';
+      const chip = chipEntrega(c, i);
       return '<div class="row"><span class="grow trunc">' + esc(e.cliente || "Sem nome") + ' <span class="muted">· ' + esc(e.medida || "") + "</span></span><span>" + brl0(tot) + "</span> " + chip + "</div>";
     }).join("");
     return '<section class="card"><div class="row"><h3 style="margin:0">' + esc(cap(diaLongo(c.data))) + '</h3><span class="chip">' + esc(c.vendedor || "") + "</span></div>" + '<div style="margin-top:8px">' + ent + "</div>" +
@@ -326,6 +366,29 @@ function vSemana() {
     '<section class="card"><h2>Pessoal</h2><div class="stats"><div class="stat"><div class="l">Entrou</div><div class="v pos">' + brl0(r.entPes) + '</div></div><div class="stat"><div class="l">Saiu</div><div class="v neg">' + brl0(r.saiPes) + "</div></div></div>" + barras(r.catPes, "var(--pes)") + "</section>";
 }
 
+function vLev() {
+  const hoje = hojeS(), de = addDias(hoje, -14);
+  const cs = D.cargas.filter(c => c.data >= de && c.data <= hoje).sort((a, b) => a.data.localeCompare(b.data));
+  const linhaEnt = (c, i) => { const e = c.entregas[i], k = c.id + "|" + i;
+    return '<div style="padding:8px 0;border-top:1px solid var(--line)"><div class="row"><span class="grow trunc"><b>' + esc(e.cliente || "Sem nome") + "</b> · " + brl0(R.totalEntrega(e)) + "</span>" + chipEntrega(c, i) + '</div><div class="btns" style="margin-top:6px"><button class="small" data-acao="lev-ent" data-k="' + k + '" data-s="pix_manual">Pix</button><button class="small" data-acao="lev-ent" data-k="' + k + '" data-s="dinheiro">Dinheiro</button><button class="small" data-acao="lev-ent" data-k="' + k + '" data-s="prazo">Dei prazo</button><button class="small" data-acao="lev-ok" data-k="' + k + '" data-s="aberto">Não pagou ainda</button></div><div id="lev-' + k.replace("|", "-") + '"></div></div>'; };
+  const ajud = c => { const ok = D.info[c.id] && D.info[c.id].ajudantes_ok, l = D.ajudantes.filter(a => a.carga_id === c.id);
+    return ok ? '<div class="row" style="margin-top:8px"><span class="muted">Ajudantes: ' + (l.length ? esc(l.map(a => ((pessoaDe(a.pessoa_id) || {}).nome || "?") + " " + brl0(a.valor)).join(", ")) : "ninguém") + '</span><button class="small" data-acao="aj-editar" data-carga="' + c.id + '">Mudar</button></div>' : ajudantesHtml(c).replace('class="card warn"', 'class="" style="margin-top:10px"'); };
+  const mesL = L.levMes, movsMes = D.movs.filter(m => m.tipo === "saida" && !m.ignorado && diaMov(m).slice(0, 7) === mesL).sort((a, b) => msDe(a.quando) - msDe(b.quando));
+  const tot = es => movsMes.filter(m => m.escopo === es).reduce((t, m) => t + +m.valor, 0);
+  const dPad = mesL === hoje.slice(0, 7) ? hoje : fimMes(mesL);
+  return '<div class="btns"><button class="small" data-acao="lev-sair">‹ Voltar</button></div><h1 style="margin-top:12px">Levantamento</h1><p class="muted">O que você já respondeu continua salvo. Pode parar e voltar quando quiser.</p>' +
+    '<h2 style="margin-top:16px">1. Cargas das últimas 2 semanas</h2><p class="hint">Diga como cada cliente pagou e quem foi de ajudante.</p>' +
+    (cs.length ? cs.map(c => '<section class="card"><h3>' + esc(cap(diaLongo(c.data))) + ' <span class="chip">' + esc(c.vendedor || "") + "</span></h3>" + c.entregas.map((e, i) => linhaEnt(c, i)).join("") + ajud(c) + "</section>").join("") : '<p class="muted">Nenhuma carga nesse período.</p>') +
+    '<h2 style="margin-top:20px">2. Gastos do mês</h2>' + navMes("lev-mes").replace(esc(mesLabel(L.mes)), esc(mesLabel(mesL))) +
+    '<section class="card"><div class="grid2"><div class="field"><label for="lv-dia">Dia</label><input type="date" id="lv-dia" min="' + mesL + '-01" max="' + fimMes(mesL) + '" value="' + (L.levDia && L.levDia.slice(0, 7) === mesL ? L.levDia : dPad) + '"></div><div class="field"><label for="lv-valor">Valor (R$)</label><input id="lv-valor" inputmode="decimal" placeholder="0,00"></div></div>' +
+    '<div class="field"><label for="lv-desc">Com o quê / onde</label><input id="lv-desc" placeholder="Ex.: Diesel, Pedágio, Mercado"></div>' +
+    '<div class="field"><label for="lv-cat">Categoria</label><select id="lv-cat">' + optCats("saida", L.levCat) + "</select></div>" +
+    '<div class="field"><label for="lv-pessoa">Pagamento pra alguém da equipe?</label><select id="lv-pessoa"><option value="">Não</option>' + D.pessoas.filter(p => p.ativo).map(p => '<option value="' + p.id + '">' + esc(p.nome) + "</option>").join("") + "</select></div>" +
+    '<div class="btns"><button class="pri" data-acao="lev-add">Adicionar gasto</button></div></section>' +
+    '<section class="card"><div class="row"><b>' + movsMes.length + ' gasto(s)</b><span><span class="chip emp">Empresa ' + brl0(tot("empresa")) + '</span> <span class="chip pes">Pessoal ' + brl0(tot("pessoal")) + "</span></span></div>" + movsMes.map(linhaMovHtml).join("") + "</section>" +
+    '<div class="btns"><button class="pri" data-acao="lev-fim">Terminei o levantamento</button></div>';
+}
+
 function vMais() {
   const linhaCat = c => '<div class="row" style="padding:6px 0;border-top:1px solid var(--line)"><span class="grow' + (c.ativo ? "" : " muted") + '">' + esc(c.nome) + "</span><button class=\"small\" data-acao=\"renomear-cat\" data-id=\"" + c.id + '">Renomear</button><button class="small" data-acao="ativar-cat" data-id="' + c.id + '">' + (c.ativo ? "Esconder" : "Mostrar") + "</button></div>";
   return '<section class="card"><h2>Categorias</h2>' + [["saida", "empresa", "Gastos da empresa"], ["saida", "pessoal", "Gastos pessoais"], ["entrada", null, "Entradas"]].map(([t, e, nome]) => '<h3 style="margin-top:12px">' + nome + "</h3>" + D.cats.filter(c => c.tipo === t && (!e || c.escopo === e)).map(linhaCat).join("")).join("") +
@@ -334,7 +397,7 @@ function vMais() {
     '<section class="card"><h2>Ajustes</h2><div class="field"><label for="desde">Alertas de entregas a partir de</label><input type="date" id="desde" value="' + L.desde + '"></div>' +
     (NATIVO ? '<p>Leitura das notificações: <b>' + (liberado ? "ligada" : "desligada") + '</b></p><div class="btns"><button data-acao="liberar">Abrir ajustes de notificação</button></div>' : "") +
     '<p class="hint">Bancos lidos: ' + esc([...new Set(Object.values(LE.BANCOS))].join(", ")) + ", Sicoob e Sicredi.</p>" +
-    '<div class="btns"><button data-acao="sair">Sair</button></div></section>';
+    '<div class="btns"><button data-acao="lev-abrir">Abrir o levantamento</button><button data-acao="sair">Sair</button></div></section>';
 }
 
 function vLogin() {
@@ -348,7 +411,7 @@ function render() {
   const nPend = D.movs.filter(m => m.pendente && !m.ignorado).length + R.alertas(ctx(), Date.now(), L.desde).length + R.cargasSemAjudante(ctx(), hojeS(), L.desde).length;
   document.getElementById("tabs").innerHTML = TABS.map(([k, t]) => '<button data-tab="' + k + '"' + (L.tab === k ? ' aria-current="page"' : "") + ">" + svg(k) + t + (k === "inicio" && nPend ? '<span class="badge">' + nPend + "</span>" : "") + "</button>").join("");
   const topo = (erro ? '<div class="errmsg" role="alert">' + esc(erro) + "</div>" : "") + (msg ? '<div class="okmsg" role="status">' + esc(msg) + "</div>" : "");
-  main.innerHTML = topo + ({ inicio: vInicio, cargas: vCargas, movs: vMovs, pessoas: vPessoas, semana: vSemana, mais: vMais })[L.tab]();
+  main.innerHTML = topo + ({ inicio: vInicio, cargas: vCargas, movs: vMovs, pessoas: vPessoas, semana: vSemana, mais: vMais, lev: vLev })[L.tab]();
   if (L.tab === "inicio") mostrarAlertasSePrecisar();
 }
 
@@ -381,6 +444,7 @@ function janelaEditar(m) {
   abrirJanela("<h2>" + (m.tipo === "entrada" ? "Entrada" : "Saída") + " de " + brl(m.valor) + '</h2><p class="muted">' + esc(m.contraparte || "") + " · " + esc(diaLongo(diaMov(m))) + (m.origem !== "extrato" ? " às " + horaMov(m) : "") + " · " + esc(m.banco) + "</p>" + (m.texto ? '<p class="hint">' + esc(m.texto) + "</p>" : "") +
     '<div class="field"><label for="ed-cat">Categoria</label><select id="ed-cat"><option value="">Escolha…</option>' + optCats(m.tipo, m.categoria_id) + "</select></div>" + entregaSel +
     (m.tipo === "saida" ? '<div class="field"><label for="ed-carga">Carga</label><select id="ed-carga"><option value="">Nenhuma</option>' + cs.map(c => '<option value="' + c.id + '"' + (c.id === m.carga_id ? " selected" : "") + ">" + diaCurto(c.data) + " · " + esc(c.entregas.map(e => e.cliente || "Sem nome").join(", ")) + "</option>").join("") + "</select></div>" +
+      '<div class="field"><label for="ed-forn">Se for compra de tijolo, de qual cerâmica?</label><select id="ed-forn">' + Object.entries(R.FORNECEDORES).map(([k, n]) => '<option value="' + k + '"' + ((m.fornecedor || R.fornecedorDoNome(m.contraparte)) === k ? " selected" : "") + ">" + esc(n) + "</option>").join("") + "</select></div>" +
       '<div class="field"><label for="ed-pessoa">Pagamento pra</label><select id="ed-pessoa"><option value="">Ninguém da equipe</option>' + D.pessoas.map(p => '<option value="' + p.id + '"' + (p.id === m.pessoa_id ? " selected" : "") + ">" + esc(p.nome) + "</option>").join("") + "</select></div>" : "") +
     (m.contraparte ? '<label class="row" style="justify-content:flex-start;margin:10px 0"><input type="checkbox" id="ed-lembrar" checked> <span>Lembrar pra próximas de "' + esc(m.contraparte) + '"</span></label>' : "") +
     '<label class="row" style="justify-content:flex-start;margin:10px 0"><input type="checkbox" id="ed-ign"' + (m.ignorado ? " checked" : "") + "> <span>Não contar esse movimento</span></label>" +
@@ -427,7 +491,7 @@ async function reclassificarPendentes() {
   for (const m of D.movs.filter(x => x.pendente && !x.ignorado)) {
     const c = R.classificar(Object.assign({}, m, { quando: msDe(m.quando) }), ctx());
     if (c.pendente) continue;
-    const up = { categoria_id: c.categoria_id || null, escopo: c.escopo || null, carga_id: c.carga_id || null, entrega_idx: c.entrega_idx ?? null, pessoa_id: c.pessoa_id || null, pendente: false };
+    const up = { categoria_id: c.categoria_id || null, escopo: c.escopo || null, carga_id: c.carga_id || null, entrega_idx: c.entrega_idx ?? null, pessoa_id: c.pessoa_id || null, fornecedor: c.fornecedor || null, pendente: false };
     const r = await sb.from("fin_movimentos").update(up).eq("id", m.id);
     if (!r.error) { Object.assign(m, up); if (m.tipo === "entrada" && m.carga_id) await conferirPagamento(m.carga_id, m.entrega_idx, diaMov(m)); }
   }
@@ -474,8 +538,9 @@ async function acao(a, ds, alvo) {
 
     case "resp": {
       const c = catDe(ds.cat); if (!m || !c) return;
-      const ok = await atualizarMov(m, { categoria_id: c.id, escopo: c.escopo, carga_id: cargaAuto(m, c.id), pessoa_id: null, pendente: false });
-      if (ok) { await aprender(m, { categoria_id: c.id, escopo: c.escopo }); msg = "Anotado. Da próxima vez já sei."; }
+      const forn = c.nome.startsWith("Compra de tijolo") ? R.fornecedorDoNome(m.contraparte) : null;
+      const ok = await atualizarMov(m, { categoria_id: c.id, escopo: c.escopo, carga_id: cargaAuto(m, c.id), pessoa_id: null, fornecedor: forn, pendente: false });
+      if (ok) { await aprender(m, { categoria_id: c.id, escopo: c.escopo, fornecedor: forn }); msg = "Anotado. Da próxima vez já sei."; }
       break;
     }
     case "resp-pessoa": {
@@ -503,11 +568,11 @@ async function acao(a, ds, alvo) {
       const cat = catDe(valorDe("ed-cat")), ign = document.getElementById("ed-ign").checked, lembrar = document.getElementById("ed-lembrar") && document.getElementById("ed-lembrar").checked;
       const up = { categoria_id: cat ? cat.id : null, escopo: cat ? cat.escopo : null, ignorado: ign, pendente: !cat && !ign };
       const antes = m.carga_id && m.entrega_idx != null ? [m.carga_id, m.entrega_idx] : null;
-      if (m.tipo === "saida") { up.carga_id = valorDe("ed-carga") || null; up.pessoa_id = valorDe("ed-pessoa") || null; if (up.pessoa_id) up.escopo = "empresa"; }
+      if (m.tipo === "saida") { up.carga_id = valorDe("ed-carga") || null; up.pessoa_id = valorDe("ed-pessoa") || null; if (up.pessoa_id) up.escopo = "empresa"; up.fornecedor = cat && cat.nome.startsWith("Compra de tijolo") ? valorDe("ed-forn") : null; }
       else { const v = valorDe("ed-ent"); if (v) { const [cid, i] = v.split("|"); up.carga_id = cid; up.entrega_idx = +i; } else { up.carga_id = null; up.entrega_idx = null; } }
       const ok = await atualizarMov(m, up);
       if (!ok) break;
-      if (lembrar && cat) await aprender(m, m.tipo === "entrada" && up.carga_id ? { cliente: (cargaDe(up.carga_id).entregas[up.entrega_idx] || {}).cliente || "", categoria_id: cat.id, escopo: cat.escopo } : { categoria_id: cat.id, escopo: up.escopo, pessoa_id: up.pessoa_id || null });
+      if (lembrar && cat) await aprender(m, m.tipo === "entrada" && up.carga_id ? { cliente: (cargaDe(up.carga_id).entregas[up.entrega_idx] || {}).cliente || "", categoria_id: cat.id, escopo: cat.escopo } : { categoria_id: cat.id, escopo: up.escopo, pessoa_id: up.pessoa_id || null, fornecedor: up.fornecedor || null });
       if (m.tipo === "entrada" && up.carga_id) await conferirPagamento(up.carga_id, up.entrega_idx, diaMov(m));
       if (antes && (antes[0] !== up.carga_id || antes[1] !== up.entrega_idx)) await desfazerPagamento(antes[0], antes[1]);
       fecharJanela(); msg = "Salvo."; break;
@@ -532,6 +597,55 @@ async function acao(a, ds, alvo) {
       const r = await inserirMovs(novos);
       out.innerHTML = r.ok ? '<div class="okmsg">' + r.n + " movimento(s) novos. " + (itens.length - novos.length) + " já estavam no app.</div>" : '<div class="errmsg">Não deu pra importar. Confira a internet.</div>';
       render(); return;
+    }
+    case "lev-abrir": L.tab = "lev"; salvarLocal(); render(); window.scrollTo(0, 0); return;
+    case "lev-sair": L.tab = "inicio"; salvarLocal(); render(); window.scrollTo(0, 0); return;
+    case "lev-fim": L.levOk = true; if (L.desde > addDias(hojeS(), -14)) L.desde = addDias(hojeS(), -14); L.tab = "inicio"; L.alertaFechado = 0; salvarLocal(); msg = "Levantamento feito. Agora é só eu ficar de olho nas notificações."; await agendarLembretes(); window.scrollTo(0, 0); break;
+    case "lev-mes": L.levMes = addMes(L.levMes, +ds.n); salvarLocal(); break;
+    case "lev-ent": {
+      const [cid, i] = ds.k.split("|"), c = cargaDe(cid), box = document.getElementById("lev-" + cid + "-" + i);
+      const rot = ds.s === "prazo" ? "Até quando?" : ds.s === "dinheiro" ? "Dia que recebeu" : "Dia que o Pix caiu";
+      const pad = ds.s === "prazo" ? addDias(hojeS(), 7) : (c ? c.data : hojeS());
+      box.innerHTML = '<div class="field"><label for="lvd-' + cid + i + '">' + rot + '</label><input type="date" id="lvd-' + cid + i + '" value="' + pad + '"></div><button class="pri small" data-acao="lev-ok" data-k="' + ds.k + '" data-s="' + ds.s + '">Confirmar</button>';
+      return;
+    }
+    case "lev-ok": {
+      const [cid, i] = ds.k.split("|"), d = valorDe("lvd-" + cid + i);
+      if (ds.s !== "aberto" && !d) return;
+      await situacaoEntrega(cid, +i, ds.s, ds.s === "prazo" ? d : null, ds.s === "prazo" ? null : d);
+      break;
+    }
+    case "lev-add": {
+      const v = parseValor(valorDe("lv-valor")), dia = valorDe("lv-dia"), c = catDe(valorDe("lv-cat")), pes = valorDe("lv-pessoa") || null;
+      if (!(v > 0)) { alert("Coloque o valor."); return; }
+      if (!dia || !c) return;
+      const [y, mo, dd] = dia.split("-").map(Number), desc = valorDe("lv-desc").trim();
+      const row = { chave: "lev|" + Date.now() + Math.random().toString(36).slice(2, 6), origem: "manual", quando: new Date(y, mo - 1, dd, 12, 0).toISOString(), tipo: "saida", valor: v, contraparte: desc, texto: "Levantamento", banco: "À mão",
+        categoria_id: c.id, escopo: pes ? "empresa" : c.escopo, pessoa_id: pes, carga_id: cargaAuto({ quando: new Date(y, mo - 1, dd, 12).toISOString() }, c.id), fornecedor: c.nome.startsWith("Compra de tijolo") ? R.fornecedorDoNome(desc) : null, pendente: false };
+      const r = await sb.from("fin_movimentos").insert(row).select().single();
+      if (r.error) { erro = "Não deu pra salvar. Confira a internet."; break; }
+      D.movs.push(r.data); L.levDia = dia; L.levCat = c.id; salvarLocal(); msg = "Gasto de " + brl(v) + " lançado.";
+      render(); const el = document.getElementById("lv-valor"); if (el) el.focus(); return;
+    }
+    case "vista-cargas": L.vistaCargas = ds.v; salvarLocal(); break;
+    case "forn-periodo": {
+      const h = hojeS(), mes = h.slice(0, 7);
+      if (ds.p === "2s") { L.fornDe = addDias(h, -14); L.fornAte = addDias(h, 30); }
+      if (ds.p === "mes") { L.fornDe = mes + "-01"; L.fornAte = fimMes(mes); }
+      if (ds.p === "mesant") { const a = addMes(mes, -1); L.fornDe = a + "-01"; L.fornAte = fimMes(a); }
+      salvarLocal(); break;
+    }
+    case "pagar-forn": {
+      abrirJanela('<h2>Pagamento à cerâmica</h2><div class="field"><label for="pf-forn">Cerâmica</label><select id="pf-forn">' + Object.entries(R.FORNECEDORES).map(([k, n]) => '<option value="' + k + '"' + (k === ds.f ? " selected" : "") + ">" + esc(n) + "</option>").join("") + '</select></div><div class="grid2"><div class="field"><label for="pf-valor">Valor (R$)</label><input id="pf-valor" inputmode="decimal" placeholder="0,00"></div><div class="field"><label for="pf-dia">Dia</label><input type="date" id="pf-dia" value="' + hojeS() + '"></div></div><p class="hint">Use isso pra pagamentos que não vieram por notificação (dinheiro, outro banco, antes de instalar o app).</p><div class="btns"><button class="pri" data-acao="pagar-forn-ok">Registrar</button><button data-acao="fechar">Cancelar</button></div>');
+      return;
+    }
+    case "pagar-forn-ok": {
+      const v = parseValor(valorDe("pf-valor")), dia = valorDe("pf-dia"), f = valorDe("pf-forn"), c = D.cats.find(x => x.nome.startsWith("Compra de tijolo"));
+      if (!(v > 0) || !dia) { alert("Coloque o valor e o dia."); return; }
+      const [y, mo, dd] = dia.split("-").map(Number);
+      const r = await sb.from("fin_movimentos").insert({ chave: "forn|" + Date.now() + Math.random().toString(36).slice(2, 6), origem: "manual", quando: new Date(y, mo - 1, dd, 12, 0).toISOString(), tipo: "saida", valor: v, contraparte: R.FORNECEDORES[f], texto: "Pagamento à cerâmica", banco: "À mão", categoria_id: c ? c.id : null, escopo: "empresa", fornecedor: f, pendente: false }).select().single();
+      if (r.error) { erro = "Não deu pra salvar."; break; }
+      D.movs.push(r.data); fecharJanela(); msg = "Pagamento registrado."; break;
     }
     case "dinheiro": { const [cid, i] = ds.k.split("|"); await situacaoEntrega(cid, +i, "dinheiro"); janelaAlertas(); break; }
     case "prazo": {
@@ -600,6 +714,7 @@ document.addEventListener("click", e => {
   acao(b.dataset.acao, b.dataset, e.target);
 });
 document.addEventListener("change", e => {
+  if ((e.target.id === "forn-de" || e.target.id === "forn-ate") && e.target.value) { L[e.target.id === "forn-de" ? "fornDe" : "fornAte"] = e.target.value; salvarLocal(); render(); return; }
   if (e.target.id === "desde" && e.target.value) { L.desde = e.target.value; L.alertaFechado = 0; salvarLocal(); agendarLembretes(); }
 });
 document.addEventListener("submit", async e => {
