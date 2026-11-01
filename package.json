@@ -1,0 +1,19 @@
+{
+  "name": "controle-financeiro",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Controle financeiro do Bruno: entradas da Tijolos Tavares e notificações dos bancos",
+  "scripts": {
+    "libs": "mkdir -p www/lib && cp node_modules/@supabase/supabase-js/dist/umd/supabase.js www/lib/ && (cp node_modules/@capacitor/core/dist/capacitor.js www/lib/ || touch www/lib/capacitor.js)",
+    "test": "node testes/leitura.test.js && node testes/regras.test.js"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/local-notifications": "^7.0.0",
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0"
+  }
+}
