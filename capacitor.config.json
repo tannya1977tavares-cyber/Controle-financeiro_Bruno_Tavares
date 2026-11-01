@@ -1,0 +1,14 @@
+{
+  "appId": "br.com.tavares.financeiro",
+  "appName": "Financeiro Tavares",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#1F5F4A"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_moeda",
+      "iconColor": "#1F5F4A"
+    }
+  }
+}
