@@ -19,6 +19,11 @@ const RE_COMIDA = /\b(restaurante|lanchonete|churrasc\w*|padaria|panificadora|la
 const RE_MERCADO = /\b(supermerc\w*|mercado|mercearia|atacad\w*|assai|carrefour|hiper\w*|sacolao|hortifruti)\b/;
 const RE_SAUDE = /\b(farm\w*|drogaria|droga\w*|raia|pacheco|hospital|clinica|laborat\w*|odonto\w*)\b/;
 const ALMOCO = [10.5, 15]; // horário de almoço em viagem
+// recebido sem Pix ligado no app: dinheiro, ou Pix anotado à mão no levantamento
+const FORA = ["dinheiro", "pix_manual"];
+const RE_CERAMICA = /\b(ceramica\w*|olaria\w*|tijol\w*)\b/;
+const FORNECEDORES = { anapolina: "Cerâmica Anapolina", outra: "Outra cerâmica" };
+const fornecedorDoNome = n => /anapolina/.test(norm(n)) ? "anapolina" : "outra";
 
 // categorias que entram no custo da carga quando o gasto é no dia dela
 const DA_CARGA = ["Combustível (diesel)", "Pedágio", "Descarga", "Alimentação na viagem"];
@@ -61,7 +66,10 @@ function classificarSaida(m, ctx) {
   // 2. combustível: acima de R$ 400 é diesel do caminhão; até 400 é gasolina (pessoal)
   if (RE_POSTO.test(n)) return m.valor > LIMITE_DIESEL ? fim("Combustível (diesel)", "empresa") : fim("Transporte (gasolina)", "pessoal");
 
-  // 3. regra que você já ensinou
+  // 3. pagamento pra cerâmica (fornecedor do tijolo)
+  if (RE_CERAMICA.test(n)) { const c = cat(ctx, "Compra de tijolo"); return { categoria_id: c ? c.id : null, escopo: "empresa", fornecedor: fornecedorDoNome(m.contraparte), pendente: false }; }
+
+  // 4. regra que você já ensinou
   const r = acharRegra(ctx, m);
   if (r) {
     if (r.pessoa_id) return { categoria_id: r.categoria_id, escopo: "empresa", pessoa_id: r.pessoa_id, pendente: false };
@@ -70,7 +78,7 @@ function classificarSaida(m, ctx) {
     if (c && temHora && emCarga && (c.nome === "Alimentação fora" || c.nome === "Alimentação na viagem")) {
       return h >= ALMOCO[0] && h <= ALMOCO[1] ? fim("Alimentação na viagem", "empresa") : fim("Alimentação fora", "pessoal");
     }
-    return comCarga(ctx, m, { categoria_id: r.categoria_id, escopo: r.escopo || (c && c.escopo) || null, pendente: false });
+    return comCarga(ctx, m, { categoria_id: r.categoria_id, escopo: r.escopo || (c && c.escopo) || null, fornecedor: r.fornecedor || null, pendente: false });
   }
 
   // 4. palavras conhecidas
@@ -98,7 +106,7 @@ function entregasAbertas(ctx) {
   const out = [];
   ctx.cargas.forEach(c => (c.entregas || []).forEach((e, i) => {
     const s = situacao(ctx, c.id, i);
-    if (s && (s.situacao === "dinheiro" || s.situacao === "nao_cobrar" || s.situacao === "pix")) return;
+    if (s && (FORA.includes(s.situacao) || s.situacao === "nao_cobrar" || s.situacao === "pix")) return;
     const total = totalEntrega(e), pago = pagoEntrega(ctx, c.id, i), falta = r2(total - pago);
     if (falta > 0.99) out.push({ carga: c, i, e, total, pago, falta });
   }));
@@ -172,7 +180,7 @@ function resumoCarga(ctx, c) {
   (c.entregas || []).forEach((e, i) => {
     venda += totalEntrega(e); tijolo += (+custos[i] || 0) * (+e.mil || 0);
     const s = situacao(ctx, c.id, i);
-    recebido += s && s.situacao === "dinheiro" ? totalEntrega(e) : pagoEntrega(ctx, c.id, i);
+    recebido += s && FORA.includes(s.situacao) ? totalEntrega(e) : pagoEntrega(ctx, c.id, i);
   });
   const gastos = ctx.movs.filter(m => m.tipo === "saida" && !m.ignorado && m.carga_id === c.id && !(catId(ctx, m.categoria_id) || {}).nome?.startsWith("Compra de tijolo"));
   const gastosTotal = gastos.reduce((s, m) => s + +m.valor, 0);
@@ -208,6 +216,34 @@ function ficha(ctx, p, de, ate) {
   return Object.assign(periodo, { saldo: r2(geral.ganhou - geral.recebeu) });
 }
 
+/* ---------- fornecedores ---------- */
+// quanto de tijolo foi comprado de cada cerâmica (custo da Tijolos) e quanto já foi pago
+function fornecedores(ctx, de, ate, hoje) {
+  const out = {};
+  Object.keys(FORNECEDORES).forEach(k => { out[k] = { chave: k, nome: FORNECEDORES[k], mil: 0, custo: 0, custoEntregue: 0, custoAgendado: 0, semCusto: [], cargas: [], medidas: {}, pagos: [], pago: 0 }; });
+  ctx.cargas.forEach(c => {
+    const d = String(c.data).slice(0, 10); if (d < de || d > ate) return;
+    const f = out[c.ceramica === "anapolina" ? "anapolina" : "outra"], custos = ((ctx.admin || {})[c.id] || {}).custos || [];
+    let custoC = 0, milC = 0;
+    (c.entregas || []).forEach((e, i) => {
+      const mil = +e.mil || 0, cu = +custos[i] || 0;
+      milC += mil; custoC += cu * mil;
+      f.medidas[e.medida || "?"] = r2((f.medidas[e.medida || "?"] || 0) + mil);
+      if (!cu) f.semCusto.push({ c, e });
+    });
+    f.mil = r2(f.mil + milC); f.custo = r2(f.custo + custoC);
+    if (d <= hoje) f.custoEntregue = r2(f.custoEntregue + custoC); else f.custoAgendado = r2(f.custoAgendado + custoC);
+    f.cargas.push({ c, mil: r2(milC), custo: r2(custoC), futura: d > hoje });
+  });
+  const tij = cat(ctx, "Compra de tijolo");
+  ctx.movs.filter(m => m.tipo === "saida" && !m.ignorado && tij && m.categoria_id === tij.id).forEach(m => {
+    const d = diaDe(new Date(m.quando).getTime()); if (d < de || d > ate) return;
+    const f = out[m.fornecedor === "anapolina" ? "anapolina" : "outra"]; f.pagos.push(m); f.pago = r2(f.pago + +m.valor);
+  });
+  Object.values(out).forEach(f => { f.deveAgora = r2(f.custoEntregue - f.pago); f.deveTudo = r2(f.custo - f.pago); });
+  return out;
+}
+
 /* ---------- semana ---------- */
 function segunda(dia) { const d = pd(dia); const w = (d.getDay() + 6) % 7; d.setDate(d.getDate() - w); return ymd(d); }
 
@@ -218,7 +254,7 @@ function resumoPeriodo(ctx, de, ate) {
     const g = {}; ms.filter(m => m.tipo === tipo && m.escopo === escopo).forEach(m => { const n = (catId(ctx, m.categoria_id) || {}).nome || "Sem categoria"; g[n] = (g[n] || 0) + +m.valor; });
     return Object.entries(g).map(([nome, v]) => ({ nome, v: r2(v) })).sort((a, b) => b.v - a.v);
   };
-  const dinheiro = r2(Object.entries(ctx.fin || {}).filter(([k, s]) => s.situacao === "dinheiro" && s.pago_em >= de && s.pago_em <= ate).reduce((t, [k]) => {
+  const dinheiro = r2(Object.entries(ctx.fin || {}).filter(([k, s]) => FORA.includes(s.situacao) && s.pago_em >= de && s.pago_em <= ate).reduce((t, [k]) => {
     const [cid, i] = k.split("|"); const c = ctx.cargas.find(x => x.id === cid); return t + (c && c.entregas[+i] ? totalEntrega(c.entregas[+i]) : 0);
   }, 0));
   const entEmp = soma(ms.filter(m => m.tipo === "entrada" && m.escopo === "empresa")) + dinheiro;
@@ -230,6 +266,6 @@ function resumoPeriodo(ctx, de, ate) {
   return { entEmp: r2(entEmp), dinheiro, entPes, saiEmp, saiPes, catEmp: porCat("saida", "empresa"), catPes: porCat("saida", "pessoal"), cargas, pendentes, resultadoEmp: r2(entEmp - saiEmp) };
 }
 
-const api = { norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
+const api = { FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Regras = api;
 })(typeof window !== "undefined" ? window : globalThis);
