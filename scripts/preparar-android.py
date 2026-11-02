@@ -26,6 +26,26 @@ servico = """
 """
 if "LeitorBancos" not in txt:
     txt = txt.replace("</application>", servico + "    </application>")
+# aparece no botão Compartilhar (foto, print, PDF, texto)
+compartilhar = """
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="application/pdf" />
+            </intent-filter>
+"""
+if "android.intent.action.SEND" not in txt:
+    i = txt.index('android:name=".MainActivity"')
+    j = txt.index("</intent-filter>", i) + len("</intent-filter>")
+    txt = txt[:j] + compartilhar.rstrip() + txt[j:]
 manifesto.write_text(txt, encoding="utf-8")
 
 res = app / "res"
@@ -42,6 +62,9 @@ gradle = raiz / "android" / "app" / "build.gradle"
 g = gradle.read_text(encoding="utf-8")
 g = re.sub(r"versionCode \d+", f"versionCode {n}", g)
 g = re.sub(r'versionName "[^"]*"', f'versionName "1.0.{n}"', g)
+# leitura de texto de foto/PDF no próprio celular (grátis, sem internet)
+if "mlkit:text-recognition" not in g:
+    g = re.sub(r"dependencies\s*\{", "dependencies {\n    implementation 'com.google.mlkit:text-recognition:16.0.1'", g, count=1)
 gradle.write_text(g, encoding="utf-8")
 
 print("Android preparado, versão 1.0." + n)
