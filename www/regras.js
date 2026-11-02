@@ -21,6 +21,7 @@ const RE_SAUDE = /\b(farm\w*|drogaria|droga\w*|raia|pacheco|hospital|clinica|lab
 const ALMOCO = [10.5, 15]; // horário de almoço em viagem
 // recebido sem Pix ligado no app: dinheiro, ou Pix anotado à mão no levantamento
 const FORA = ["dinheiro", "pix_manual"];
+const RE_PAGFATURA = /\b(pagamento (de |da )?fatura|fatura do cartao|fatura nubank|pagamento recebido)\b/;
 const RE_CERAMICA = /\b(ceramica\w*|olaria\w*|tijol\w*)\b/;
 const FORNECEDORES = { anapolina: "Cerâmica Anapolina", outra: "Outra cerâmica" };
 const fornecedorDoNome = n => /anapolina/.test(norm(n)) ? "anapolina" : "outra";
@@ -58,6 +59,9 @@ function classificarSaida(m, ctx) {
   const temHora = m.origem !== "extrato";
   const emCarga = cargasDoDia(ctx, dia).length > 0;
   const fim = (nome, escopo, extra) => { const c = cat(ctx, nome); return comCarga(ctx, m, Object.assign({ categoria_id: c ? c.id : null, escopo: escopo || (c && c.escopo) || null, pendente: false }, extra || {})); };
+
+  // 0. pagamento da fatura do cartão: os gastos já contaram quando você comprou
+  if (RE_PAGFATURA.test(norm((m.texto || "") + " " + (m.contraparte || "")))) return { categoria_id: null, escopo: null, ignorado: true, pendente: false, fatura: true };
 
   // 1. Pix pra ajudante ou vendedor
   const p = acharPessoa(ctx, m.contraparte);
@@ -244,6 +248,42 @@ function fornecedores(ctx, de, ate, hoje) {
   return out;
 }
 
+/* ---------- contas a pagar ---------- */
+function contaQuePaga(m, contas, cartao) {
+  const dia = pd(diaDe(typeof m.quando === "number" ? m.quando : new Date(m.quando).getTime())).getTime();
+  const ok = contas.filter(c => !c.pago_em && (!cartao || c.tipo === "cartao") && Math.abs(+c.valor - m.valor) <= Math.max(1, +c.valor * 0.01)
+    && (dia - pd(c.vencimento).getTime()) / 86400000 >= -12 && (dia - pd(c.vencimento).getTime()) / 86400000 <= 5);
+  ok.sort((a, b) => Math.abs(pd(a.vencimento).getTime() - dia) - Math.abs(pd(b.vencimento).getTime() - dia));
+  return ok[0] || null;
+}
+
+function contasAbertas(ctx, hoje) {
+  return (ctx.contas || []).filter(c => !c.pago_em).map(c => Object.assign({}, c, { vencida: c.vencimento < hoje, logo: c.vencimento >= hoje && c.vencimento <= addDias(hoje, 7) })).sort((a, b) => a.vencimento.localeCompare(b.vencimento));
+}
+
+/* ---------- calendário ---------- */
+// tudo de cada dia: entregas da Tijolos, entradas, gastos da carga, da empresa, pessoais e contas
+function calendario(ctx, de, ate) {
+  const dias = {};
+  const d = k => (dias[k] = dias[k] || { cargas: [], entradas: [], gCarga: [], gEmp: [], gPes: [], contas: [], dinheiro: [] });
+  ctx.cargas.forEach(c => { const k = String(c.data).slice(0, 10); if (k >= de && k <= ate) d(k).cargas.push(c); });
+  ctx.movs.forEach(m => {
+    if (m.ignorado) return;
+    const k = diaDe(new Date(m.quando).getTime()); if (k < de || k > ate) return;
+    if (m.tipo === "entrada") d(k).entradas.push(m);
+    else if (m.carga_id) d(k).gCarga.push(m);
+    else if (m.escopo === "pessoal") d(k).gPes.push(m);
+    else d(k).gEmp.push(m);
+  });
+  Object.entries(ctx.fin || {}).forEach(([key, s]) => {
+    if (!FORA.includes(s.situacao) || !s.pago_em || s.pago_em < de || s.pago_em > ate) return;
+    const [cid, i] = key.split("|"), c = ctx.cargas.find(x => x.id === cid);
+    if (c && c.entregas[+i]) d(s.pago_em).dinheiro.push({ c, i: +i, e: c.entregas[+i], valor: totalEntrega(c.entregas[+i]), situacao: s.situacao });
+  });
+  (ctx.contas || []).forEach(c => { if (c.vencimento >= de && c.vencimento <= ate) d(c.vencimento).contas.push(c); });
+  return dias;
+}
+
 /* ---------- semana ---------- */
 function segunda(dia) { const d = pd(dia); const w = (d.getDay() + 6) % 7; d.setDate(d.getDate() - w); return ymd(d); }
 
@@ -266,6 +306,6 @@ function resumoPeriodo(ctx, de, ate) {
   return { entEmp: r2(entEmp), dinheiro, entPes, saiEmp, saiPes, catEmp: porCat("saida", "empresa"), catPes: porCat("saida", "pessoal"), cargas, pendentes, resultadoEmp: r2(entEmp - saiEmp) };
 }
 
-const api = { FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
+const api = { contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Regras = api;
 })(typeof window !== "undefined" ? window : globalThis);

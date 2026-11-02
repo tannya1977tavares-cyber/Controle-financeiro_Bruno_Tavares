@@ -74,3 +74,18 @@ console.log("extrato: tudo certo");
   assert.strictEqual(R.entregasAbertas(c3).some(x => x.carga.id === "a"), false);
   console.log("fornecedores: tudo certo");
 }
+// fatura paga não conta, contas e calendário
+{
+  const c4 = { cats: [], regras: [], pessoas: [], cargas: [{ id: "k", data: "2026-11-05", entregas: [{ cliente: "A", mil: 1, preco: 100 }] }], admin: {}, fin: {}, movs: [], ajudantes: [], info: {}, faltas: [],
+    contas: [{ id: "f1", tipo: "cartao", valor: 2345.67, vencimento: "2026-11-10" }, { id: "b1", tipo: "boleto", valor: 300, vencimento: "2026-11-03" }] };
+  const r = R.classificar({ tipo: "saida", contraparte: "", texto: "Pagamento de fatura realizado", valor: 2345.67, quando: Date.now(), origem: "notificacao" }, c4);
+  assert.deepStrictEqual([r.ignorado, r.pendente], [true, false]);
+  assert.strictEqual(R.contaQuePaga({ valor: 2345.67, quando: new Date("2026-11-09T10:00:00").getTime() }, c4.contas, true).id, "f1");
+  assert.strictEqual(R.contaQuePaga({ valor: 300, quando: new Date("2026-11-20T10:00:00").getTime() }, c4.contas), null);
+  const ab = R.contasAbertas(c4, "2026-11-04");
+  assert.deepStrictEqual(ab.map(c => [c.id, c.vencida, c.logo]), [["b1", true, false], ["f1", false, true]]);
+  c4.movs.push({ tipo: "saida", valor: 50, escopo: "pessoal", quando: new Date("2026-11-05T12:00:00").toISOString() });
+  const cal = R.calendario(c4, "2026-11-01", "2026-11-30");
+  assert.deepStrictEqual([cal["2026-11-05"].cargas.length, cal["2026-11-05"].gPes.length, cal["2026-11-10"].contas.length], [1, 1, 1]);
+  console.log("contas e calendário: tudo certo");
+}

@@ -4,7 +4,16 @@ import android.content.Intent;
 import android.net.Uri;
 import android.provider.Settings;
 
+import android.os.Build;
+
 import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.FileProvider;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -63,5 +72,47 @@ public class AvisosBancosPlugin extends Plugin {
             Fila.apagar(getContext(), s);
             call.resolve();
         } catch (Exception e) { call.reject("Não deu pra apagar"); }
+    }
+
+    /** Baixa o APK novo e abre o instalador do Android (atualiza por cima, sem desinstalar). */
+    @PluginMethod
+    public void atualizar(PluginCall call) {
+        final String endereco = call.getString("url");
+        if (endereco == null) { call.reject("Sem endereço"); return; }
+        if (Build.VERSION.SDK_INT >= 26 && !getContext().getPackageManager().canRequestPackageInstalls()) {
+            Intent i = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getContext().getPackageName()));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            call.reject("PERMITIR");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                File arq = new File(getContext().getCacheDir(), "atualizacao.apk");
+                URL url = new URL(endereco);
+                HttpURLConnection con = null;
+                for (int r = 0; r < 5; r++) {
+                    con = (HttpURLConnection) url.openConnection();
+                    con.setInstanceFollowRedirects(false);
+                    con.setConnectTimeout(20000); con.setReadTimeout(60000);
+                    int cod = con.getResponseCode();
+                    if (cod >= 300 && cod < 400) { url = new URL(url, con.getHeaderField("Location")); con.disconnect(); continue; }
+                    break;
+                }
+                if (con.getResponseCode() != 200) throw new Exception("HTTP " + con.getResponseCode());
+                try (InputStream in = con.getInputStream(); FileOutputStream out = new FileOutputStream(arq)) {
+                    byte[] buf = new byte[16384]; int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+                Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", arq);
+                Intent i = new Intent(Intent.ACTION_VIEW);
+                i.setDataAndType(uri, "application/vnd.android.package-archive");
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(i);
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("Não deu pra baixar a atualização");
+            }
+        }).start();
     }
 }

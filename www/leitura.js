@@ -64,8 +64,15 @@ function lerAviso(a) {
   if (!banco) return null;
   const titulo = String(a.titulo || ""), texto = String(a.texto || "");
   const tudo = (titulo + " · " + texto).replace(/ /g, " ");
+  const mv0 = tudo.match(RE_VALOR);
+  // fatura do cartão: fechou (vira conta a pagar) ou foi paga (não conta como gasto de novo)
+  if (/fatura/i.test(tudo) && mv0) {
+    const v = Math.abs(numero(mv0[1]));
+    if (/pag(amento|o|a|ou)|quitad/i.test(tudo) && !/(fechou|fechada|vence|vencimento)/i.test(tudo)) return { banco, tipo: "pagfatura", valor: v, contraparte: "Fatura do cartão", texto: tudo, quando: a.quando };
+    if (/fech(ou|ada|amento)|dispon[ií]vel|est[aá] (aberta|pronta)/i.test(tudo)) return { banco, tipo: "fatura", valor: v, vencimento: vencimentoDe(tudo, a.quando), texto: tudo, quando: a.quando };
+  }
   if (RE_IGNORAR.test(tudo)) return null;
-  const mv = tudo.match(RE_VALOR);
+  const mv = mv0;
   if (!mv) return null;
   const valor = Math.abs(numero(mv[1]));
   if (!isFinite(valor) || valor <= 0) return null;
@@ -80,6 +87,25 @@ function lerAviso(a) {
   let quem = contraparte(depois, tipo);
   if (!quem) quem = contraparte(ondeTexto.slice(0, i), tipo);
   return { banco, tipo, valor: Math.round(valor * 100) / 100, contraparte: quem, texto: tudo, quando: a.quando };
+}
+
+// "vence em 10/12", "vencimento: 10/12/2026", "vence dia 10"
+function vencimentoDe(t, quando) {
+  const base = new Date(quando || Date.now());
+  const p2 = n => String(n).padStart(2, "0");
+  let m = t.match(/venc\w*[^\d]{0,25}(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/i);
+  if (m) {
+    let y = m[3] ? +m[3] : base.getFullYear(); if (y < 100) y += 2000;
+    if (!m[3] && new Date(y, +m[2] - 1, +m[1]) < new Date(base.getFullYear(), base.getMonth(), base.getDate() - 3)) y++;
+    return y + "-" + p2(m[2]) + "-" + p2(m[1]);
+  }
+  m = t.match(/venc\w*[^\d]{0,25}dia (\d{1,2})\b/i);
+  if (m) {
+    const d = new Date(base.getFullYear(), base.getMonth(), +m[1]);
+    if (d < base) d.setMonth(d.getMonth() + 1);
+    return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate());
+  }
+  return null;
 }
 
 function nomeBanco(pkg) {
@@ -158,6 +184,6 @@ function lerExtrato(txt, nomeArquivo, banco) {
   return out;
 }
 
-const api = { BANCOS, nomeBanco, lerAviso, lerExtrato, norm, numero };
+const api = { vencimentoDe, BANCOS, nomeBanco, lerAviso, lerExtrato, norm, numero };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Leitura = api;
 })(typeof window !== "undefined" ? window : globalThis);

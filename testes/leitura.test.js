@@ -9,7 +9,8 @@ const casos = [
   [nu("Transferência enviada", "Sua transferência de R$ 150,00 para MARCOS PEREIRA foi realizada."), { tipo: "saida", valor: 150, contraparte: "MARCOS PEREIRA" }],
   [nu("Pix enviado", "Você enviou R$ 300,00 para Carlos Souza"), { tipo: "saida", valor: 300, contraparte: "Carlos Souza" }],
   [L.lerAviso({ pkg: "com.itau", titulo: "Pix recebido", texto: "R$ 500,00 de MARIA LIMA às 14:02", quando: 1 }), { tipo: "entrada", valor: 500, contraparte: "MARIA LIMA", banco: "Itaú" }],
-  [nu("Fatura", "Sua fatura fechou em R$ 2.300,00"), null],
+  [nu("Fatura", "Sua fatura fechou em R$ 2.300,00"), { tipo: "fatura", valor: 2300 }],
+  [nu("Limite", "Seu limite disponível é R$ 2.300,00"), null],
   [nu("Compra recusada", "Compra de R$ 50,00 recusada em LOJA X"), null],
   [L.lerAviso({ pkg: "com.whatsapp", titulo: "Ze", texto: "me manda R$ 50,00", quando: 1 }), null],
 ];
@@ -35,3 +36,14 @@ const ofx = "<OFX><BANKTRANLIST><STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20261015000000[
 const e3 = L.lerExtrato(ofx);
 assert.deepStrictEqual([e3[0].tipo, e3[0].valor, e3[0].contraparte, e3[0].chave], ["saida", 89.9, "PADARIA X", "ofx|x1"]);
 console.log("leitura: tudo certo");
+// fatura
+{
+  const q = new Date("2026-11-02T10:00:00").getTime();
+  const f = L.lerAviso({ pkg: "com.nu.production", titulo: "Fatura fechada", texto: "A fatura do seu cartão fechou em R$ 2.345,67 e vence em 10/11.", quando: q });
+  assert.deepStrictEqual([f.tipo, f.valor, f.vencimento], ["fatura", 2345.67, "2026-11-10"]);
+  const f2 = L.lerAviso({ pkg: "com.nu.production", titulo: "Fatura", texto: "Sua fatura de R$ 500,00 está disponível. Vencimento dia 5", quando: q });
+  assert.deepStrictEqual([f2.tipo, f2.vencimento], ["fatura", "2026-11-05"]);
+  const p = L.lerAviso({ pkg: "com.nu.production", titulo: "Pagamento recebido", texto: "Recebemos o pagamento da sua fatura de R$ 2.345,67.", quando: q });
+  assert.deepStrictEqual([p.tipo, p.valor], ["pagfatura", 2345.67]);
+  console.log("fatura: tudo certo");
+}
