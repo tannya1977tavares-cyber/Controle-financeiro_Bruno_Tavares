@@ -228,7 +228,7 @@ public class AvisosBancosPlugin extends Plugin {
             for (int k = 0; k < arquivos.size(); k++) {
                 JSObject r = new JSObject(); r.put("nome", nomes.get(k)); r.put("tipo", tipos.get(k));
                 try { r.put("texto", lerArquivo(leitor, arquivos.get(k), tipos.get(k))); }
-                catch (Exception e) { r.put("erro", "Não consegui ler esse arquivo"); }
+                catch (Exception e) { String m = String.valueOf(e.getMessage()); r.put("erro", m.toLowerCase().contains("download") ? "O leitor de comprovantes ainda está sendo baixado pelo celular. Tente de novo daqui a pouco." : "Não consegui ler esse arquivo"); }
                 arquivos.get(k).delete();
                 guardar(r);
             }

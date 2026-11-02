@@ -24,6 +24,8 @@ servico = """
             </intent-filter>
         </service>
 """
+if "com.google.mlkit.vision.DEPENDENCIES" not in txt:
+    txt = txt.replace("</application>", '        <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="ocr" />\n    </application>')
 if "LeitorBancos" not in txt:
     txt = txt.replace("</application>", servico + "    </application>")
 # aparece no botão Compartilhar (foto, print, PDF, texto)
@@ -63,8 +65,9 @@ g = gradle.read_text(encoding="utf-8")
 g = re.sub(r"versionCode \d+", f"versionCode {n}", g)
 g = re.sub(r'versionName "[^"]*"', f'versionName "1.0.{n}"', g)
 # leitura de texto de foto/PDF no próprio celular (grátis, sem internet)
-if "mlkit:text-recognition" not in g:
-    g = re.sub(r"dependencies\s*\{", "dependencies {\n    implementation 'com.google.mlkit:text-recognition:16.0.1'", g, count=1)
+# versão que usa o leitor do Google Play (o app fica bem menor)
+if "mlkit-text-recognition" not in g:
+    g = re.sub(r"dependencies\s*\{", "dependencies {\n    implementation 'com.google.android.gms:play-services-mlkit-text-recognition:19.0.1'", g, count=1)
 gradle.write_text(g, encoding="utf-8")
 
 print("Android preparado, versão 1.0." + n)
