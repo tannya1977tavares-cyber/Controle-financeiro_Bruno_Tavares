@@ -387,10 +387,31 @@ function vFicha(p) {
 const CORES = { ent: "var(--ok)", carga: "#C2562F", gcarga: "var(--emp)", gemp: "#14858A", gpes: "var(--pes)", conta: "var(--warn)", vencida: "var(--danger)" };
 const LEG = [["ent", "Entrou dinheiro"], ["carga", "Entrega da Tijolos"], ["gcarga", "Gasto das entregas"], ["gemp", "Outro gasto da empresa"], ["gpes", "Gasto pessoal"], ["conta", "Conta a pagar"]];
 
+function botaoExcel() { return '<div class="btns"><button class="pri" data-acao="abrir-excel">' + (gerandoExcel ? "Montando a planilha…" : "Abrir no Excel") + "</button></div>"; }
+
+let gerandoExcel = false;
+async function abrirExcel() {
+  if (gerandoExcel) return;
+  gerandoExcel = true; render();
+  try {
+    const abas = [];
+    for (const [nome, aba, colunas] of Excel.ABAS_FIN) {
+      const { data, error } = await sb.rpc("planilha_dados", { t: null, aba });
+      if (error) throw error;
+      abas.push({ nome, colunas, linhas: data || [] });
+    }
+    const b64 = Excel.base64(Excel.xlsx(abas)), nome = "Financeiro Tavares " + hojeS() + ".xlsx", tipo = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    if (NATIVO) await Avisos.abrirArquivo({ nome, base64: b64, tipo });
+    else { const a = document.createElement("a"); a.href = "data:" + tipo + ";base64," + b64; a.download = nome; a.click(); }
+    msg = "Planilha aberta com os dados de agora.";
+  } catch (e) { erro = "Não consegui montar a planilha. Confira a internet e tente de novo."; }
+  gerandoExcel = false;
+}
+
 function vAgenda() {
   const seg = '<div class="filtros">' + [["cal", "Calendário"], ["contas", "Contas"], ["semana", "Semana"]].map(([k, t]) => '<button aria-pressed="' + ((L.vistaAgenda || "cal") === k) + '" data-acao="vista-agenda" data-v="' + k + '">' + t + "</button>").join("") + "</div>";
   const v = L.vistaAgenda || "cal";
-  return seg + (v === "contas" ? vContas() : v === "semana" ? vSemana() : vCalendario());
+  return seg + (v === "contas" ? vContas() : v === "semana" ? vSemana() : vCalendario()) + botaoExcel();
 }
 
 function vCalendario() {
@@ -478,6 +499,7 @@ function vMais() {
   return '<section class="card"><h2>Categorias</h2>' + [["saida", "empresa", "Gastos da empresa"], ["saida", "pessoal", "Gastos pessoais"], ["entrada", null, "Entradas"]].map(([t, e, nome]) => '<h3 style="margin-top:12px">' + nome + "</h3>" + D.cats.filter(c => c.tipo === t && (!e || c.escopo === e)).map(linhaCat).join("")).join("") +
     '<div class="grid2" style="margin-top:12px"><input id="nova-cat" placeholder="Nova categoria"><select id="nova-cat-tipo"><option value="saida|empresa">Gasto da empresa</option><option value="saida|pessoal">Gasto pessoal</option><option value="entrada|empresa">Entrada da empresa</option><option value="entrada|pessoal">Entrada pessoal</option></select></div><div class="btns"><button class="pri" data-acao="criar-cat">Criar categoria</button></div></section>' +
     '<section class="card"><h2>O que o app já aprendeu</h2>' + (D.regras.length ? D.regras.map(r => { const c = catDe(r.categoria_id), p = pessoaDe(r.pessoa_id); return '<div class="row" style="padding:6px 0;border-top:1px solid var(--line)"><span class="grow trunc">' + esc(r.padrao) + ' <span class="muted">→ ' + esc(r.cliente ? "cliente " + r.cliente : p ? p.nome : c ? c.nome : "?") + "</span></span><button class=\"small\" data-acao=\"apagar-regra\" data-id=\"" + r.id + '">Esquecer</button></div>'; }).join("") : '<p class="muted">Ainda nada. Cada resposta sua vira uma regra aqui.</p>') + "</section>" +
+    '<section class="card"><h2>Planilha</h2><p class="muted">Abre no Excel com tudo atualizado: resumo do mês, movimentos, entregas e contas.</p>' + botaoExcel() + "</section>" +
     '<section class="card"><h2>Ajustes</h2><div class="field"><label for="desde">Alertas de entregas a partir de</label><input type="date" id="desde" value="' + L.desde + '"></div>' +
     (NATIVO ? '<p>Leitura das notificações: <b>' + (liberado ? "ligada" : "desligada") + '</b></p><div class="btns"><button data-acao="liberar">Abrir ajustes de notificação</button></div>' : "") +
     '<p class="hint">Versão do app: 1.0.' + (window.VERSAO_APP || 0) + (NATIVO ? ' · <button class="small ghost" data-acao="procurar-versao">Procurar atualização</button>' : "") + "</p>" +
@@ -751,6 +773,7 @@ async function acao(a, ds, alvo) {
       catch (e) { atualizando = String(e && e.message).includes("PERMITIR") ? "Libere \"Instalar apps desconhecidos\" pro Financeiro Tavares e toque em Atualizar de novo." : "Não deu pra baixar. Confira a internet e tente de novo."; }
       break;
     }
+    case "abrir-excel": await abrirExcel(); break;
     case "procurar-versao": await procurarVersao(); msg = novaVersao ? "Tem versão nova! Veja no Início." : "Você já está na versão mais nova."; break;
     case "lev-abrir": L.tab = "lev"; salvarLocal(); render(); window.scrollTo(0, 0); return;
     case "lev-sair": L.tab = "inicio"; salvarLocal(); render(); window.scrollTo(0, 0); return;

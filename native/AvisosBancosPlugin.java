@@ -115,4 +115,37 @@ public class AvisosBancosPlugin extends Plugin {
             }
         }).start();
     }
+    /** Salva um arquivo (base64) e abre no app certo, ex.: planilha no Excel. */
+    @PluginMethod
+    public void abrirArquivo(PluginCall call) {
+        String nome = call.getString("nome", "arquivo");
+        String dados = call.getString("base64", "");
+        String tipo = call.getString("tipo", "application/octet-stream");
+        try {
+            File pasta = new File(getContext().getCacheDir(), "planilhas");
+            pasta.mkdirs();
+            File arq = new File(pasta, nome);
+            try (FileOutputStream out = new FileOutputStream(arq)) {
+                out.write(android.util.Base64.decode(dados, android.util.Base64.DEFAULT));
+            }
+            Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", arq);
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(uri, tipo);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                getContext().startActivity(i);
+            } catch (android.content.ActivityNotFoundException e) {
+                Intent s = new Intent(Intent.ACTION_SEND);
+                s.setType(tipo);
+                s.putExtra(Intent.EXTRA_STREAM, uri);
+                s.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                Intent esc = Intent.createChooser(s, "Abrir planilha com");
+                esc.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(esc);
+            }
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Não deu pra abrir a planilha");
+        }
+    }
 }
