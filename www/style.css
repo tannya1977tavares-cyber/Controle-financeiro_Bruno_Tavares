@@ -83,3 +83,15 @@ input[type=checkbox]{width:22px;min-height:22px;height:22px;accent-color:var(--b
 .pessoa-linha{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)}
 .pessoa-linha select{width:auto;min-width:110px}
 ol.passos{padding-left:20px;margin:6px 0} ol.passos li{margin:4px 0}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.cal .cab{text-align:center;font-size:12px;color:var(--muted);font-weight:600;padding:2px 0}
+.dia-cal{min-height:52px;padding:4px 0;border-radius:8px;border:1px solid var(--line);background:var(--field);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:4px;font-size:15px}
+.dia-cal.hoje{border-color:var(--brand);font-weight:700}
+.dia-cal.sel{background:var(--brand);color:var(--on-brand);border-color:var(--brand)}
+.pts{display:flex;flex-wrap:wrap;justify-content:center;gap:2px;max-width:34px}
+.pts i,.leg i{display:inline-block;width:7px;height:7px;border-radius:50%}
+.dia-cal.sel .pts i{box-shadow:0 0 0 1.5px var(--on-brand)}
+.leg{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.leg span{display:inline-flex;align-items:center;gap:5px}
+.mv button.small{margin-left:4px}
+details.card summary{cursor:pointer}

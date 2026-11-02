@@ -41,9 +41,9 @@ let L = Object.assign({ tab: "inicio", mes: hojeS().slice(0, 7), semana: R.segun
 const salvarLocal = () => gravar("fin-local", L);
 if (!ler("fin-local", null)) salvarLocal(); // guarda a data de início na primeira vez
 let D = vazio();
-function vazio() { return { perfil: null, cats: [], regras: [], pessoas: [], movs: [], cargas: [], admin: {}, fin: {}, ajudantes: [], info: {}, faltas: [] }; }
+function vazio() { return { perfil: null, cats: [], regras: [], pessoas: [], movs: [], cargas: [], admin: {}, fin: {}, ajudantes: [], info: {}, faltas: [], contas: [] }; }
 let liberado = true, msg = "", erro = "", sincronizando = false, ultimaSync = null;
-const ctx = () => ({ cats: D.cats, regras: D.regras, pessoas: D.pessoas, movs: D.movs, cargas: D.cargas, admin: D.admin, fin: D.fin, ajudantes: D.ajudantes, info: D.info, faltas: D.faltas });
+const ctx = () => ({ cats: D.cats, regras: D.regras, pessoas: D.pessoas, movs: D.movs, cargas: D.cargas, admin: D.admin, fin: D.fin, ajudantes: D.ajudantes, info: D.info, faltas: D.faltas, contas: D.contas });
 const catDe = id => D.cats.find(c => c.id === id);
 const pessoaDe = id => D.pessoas.find(p => p.id === id);
 const cargaDe = id => D.cargas.find(c => c.id === id);
@@ -61,7 +61,8 @@ async function carregar() {
     sb.from("fin_entregas").select("*"),
     sb.from("fin_carga_ajudantes").select("*"),
     sb.from("fin_cargas_info").select("*"),
-    sb.from("fin_faltas").select("*")
+    sb.from("fin_faltas").select("*"),
+    sb.from("fin_contas").select("*").order("vencimento")
   ]);
   const e = q.find(x => x.error);
   if (e) { erro = "Sem conexão com o servidor. Confira a internet."; return false; }
@@ -73,6 +74,7 @@ async function carregar() {
   D.ajudantes = q[7].data;
   D.info = {}; q[8].data.forEach(i => { D.info[i.carga_id] = i; });
   D.faltas = q[9].data.map(f => ({ ...f, dia: String(f.dia).slice(0, 10) }));
+  D.contas = q[10].data.map(c => ({ ...c, vencimento: String(c.vencimento).slice(0, 10), pago_em: c.pago_em ? String(c.pago_em).slice(0, 10) : null }));
   return true;
 }
 
@@ -82,16 +84,31 @@ function linhaMov(m, origem) {
 
 async function inserirMovs(lista) {
   // classifica um por um (cada um entra no contexto do próximo) e grava
-  const novos = [];
-  for (const m of lista) {
-    const c = R.classificar(m, ctx());
-    const row = Object.assign(linhaMov(m, m.origem), { categoria_id: c.categoria_id || null, escopo: c.escopo || null, carga_id: c.carga_id || null, entrega_idx: c.entrega_idx ?? null, pessoa_id: c.pessoa_id || null, fornecedor: c.fornecedor || null, pendente: !!c.pendente });
+  const novos = [], faturas = [];
+  for (const m0 of lista) {
+    if (m0.tipo === "fatura") { faturas.push(m0); continue; }
+    const pagFat = m0.tipo === "pagfatura", m = pagFat ? Object.assign({}, m0, { tipo: "saida" }) : m0;
+    const c = pagFat ? { ignorado: true, pendente: false, fatura: true } : R.classificar(m, ctx());
+    const row = Object.assign(linhaMov(m, m.origem), { categoria_id: c.categoria_id || null, escopo: c.escopo || null, carga_id: c.carga_id || null, entrega_idx: c.entrega_idx ?? null, pessoa_id: c.pessoa_id || null, fornecedor: c.fornecedor || null, ignorado: !!c.ignorado, pendente: !!c.pendente });
     novos.push(row);
     D.movs.push(Object.assign({ id: "tmp" + novos.length }, row));
   }
-  if (!novos.length) return { ok: true, n: 0 };
+  for (const f of faturas) {
+    const dia = R.diaDe(f.quando);
+    const r0 = await sb.from("fin_contas").upsert({ chave: "fat|" + f.chave, descricao: "Fatura do cartão " + (f.banco || ""), tipo: "cartao", valor: f.valor, vencimento: f.vencimento || addDias(dia, 10), banco: f.banco || null }, { onConflict: "chave", ignoreDuplicates: true });
+    if (r0.error) return { ok: false };
+  }
+  if (!novos.length) { if (faturas.length) await carregar(); return { ok: true, n: 0 }; }
   const r = await sb.from("fin_movimentos").upsert(novos, { onConflict: "chave", ignoreDuplicates: true }).select();
   if (r.error) return { ok: false };
+  if (faturas.length) await carregar();
+  for (const m of r.data || []) {
+    if (m.tipo !== "saida" || m.pendente) continue;
+    const ehFatura = m.ignorado && /fatura|pagamento recebido/i.test((m.texto || "") + " " + (m.contraparte || ""));
+    if (m.ignorado && !ehFatura) continue;
+    const conta = R.contaQuePaga(m, D.contas, ehFatura);
+    if (conta && (ehFatura || conta.tipo !== "cartao")) { const dia = diaMov(m); await sb.from("fin_contas").update({ pago_em: dia, movimento_id: m.id }).eq("id", conta.id); conta.pago_em = dia; conta.movimento_id = m.id; }
+  }
   const ligados = new Set();
   (r.data || []).forEach(m => { if (m.tipo === "entrada" && m.carga_id && m.entrega_idx != null) ligados.add(m.carga_id + "|" + m.entrega_idx); });
   await carregar();
@@ -188,6 +205,13 @@ async function agendarLembretes() {
       const t = pd(c.data); t.setHours(20, 0, 0, 0);
       if (t.getTime() > agora) lista.push({ id: id2++, title: "Carga de hoje: o dinheiro entrou?", body: c.entregas.map(e => e.cliente || "Sem nome").join(", "), schedule: { at: t, allowWhileIdle: true } });
     });
+    let id3 = 400;
+    R.contasAbertas(ctx(), hojeS()).filter(c => c.vencimento >= hojeS()).slice(0, 90).forEach(c => {
+      [[-1, "Conta vence amanhã"], [0, "Conta vence hoje"]].forEach(([d, t]) => {
+        const at = pd(addDias(c.vencimento, d)); at.setHours(9, 0, 0, 0);
+        if (at.getTime() > agora && id3 < 600) lista.push({ id: id3++, title: t, body: c.descricao + " · " + brl(c.valor), schedule: { at, allowWhileIdle: true } });
+      });
+    });
     lista.push({ id: 300, title: "Resumo da semana", body: "Veja quanto entrou e quanto saiu na semana passada.", schedule: { on: { weekday: 2, hour: 8, minute: 0 }, allowWhileIdle: true } });
     await Notif.schedule({ notifications: lista });
   } catch (e) {}
@@ -202,7 +226,7 @@ const ICON = {
   semana: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   mais: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'
 };
-const TABS = [["inicio", "Início"], ["cargas", "Cargas"], ["movs", "Movimentos"], ["pessoas", "Pessoas"], ["semana", "Semana"], ["mais", "Mais"]];
+const TABS = [["inicio", "Início"], ["cargas", "Cargas"], ["movs", "Movimentos"], ["pessoas", "Pessoas"], ["semana", "Agenda"], ["mais", "Mais"]];
 const svg = k => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICON[k] + "</svg>";
 
 /* ---------- pedaços de tela ---------- */
@@ -264,6 +288,10 @@ function vInicio() {
   if (NATIVO && !liberado) h += '<section class="card red"><h2>Falta liberar a leitura das notificações</h2><ol class="passos"><li>Toque em <b>Abrir ajustes</b> e ative <b>Financeiro Tavares</b>.</li><li>Se o Android disser que é uma <b>configuração restrita</b>: toque em <b>Info do app</b>, depois nos <b>três pontinhos</b> lá em cima, em <b>Permitir configurações restritas</b>, e volte no passo 1.</li></ol><div class="btns"><button class="pri" data-acao="liberar">Abrir ajustes</button><button data-acao="info-app">Info do app</button></div></section>';
   if (al.length) h += '<section class="card red" data-acao="abrir-alertas" style="cursor:pointer"><h2 style="color:var(--danger)">' + al.length + (al.length > 1 ? " entregas sem recebimento" : " entrega sem recebimento") + '</h2><p>Toque pra dizer se o cliente pagou em dinheiro ou se você deu prazo.</p></section>';
   if (aj.length) h += ajudantesHtml(aj[0]) + (aj.length > 1 ? '<p class="hint">Mais ' + (aj.length - 1) + " carga(s) esperando os ajudantes.</p>" : "");
+  if (novaVersao) h += '<section class="card" style="border:2px solid var(--brand)"><h2>Versão nova disponível (1.0.' + novaVersao.n + ')</h2><p>Toque em Atualizar. O app baixa e instala por cima, sem perder nada.</p><div class="btns"><button class="pri" data-acao="atualizar-app">Atualizar</button></div>' + (atualizando ? '<p class="hint">' + esc(atualizando) + "</p>" : "") + "</section>";
+  { const ab = R.contasAbertas(cx, hojeS()), v = ab.filter(c => c.vencida), l = ab.filter(c => c.logo);
+    if (v.length) h += '<section class="card red" data-acao="ir-contas" style="cursor:pointer"><h2 style="color:var(--danger)">' + v.length + (v.length > 1 ? " contas vencidas" : " conta vencida") + " · " + brl0(v.reduce((t, c) => t + +c.valor, 0)) + '</h2><p class="muted">' + esc(v.slice(0, 3).map(c => c.descricao + " (" + diaCurto(c.vencimento) + ")").join(", ")) + "</p></section>";
+    if (l.length) h += '<section class="card warn" data-acao="ir-contas" style="cursor:pointer"><h2>' + l.length + (l.length > 1 ? " contas vencem" : " conta vence") + " nos próximos 7 dias · " + brl0(l.reduce((t, c) => t + +c.valor, 0)) + '</h2><p class="muted">' + esc(l.slice(0, 3).map(c => c.descricao + " (" + diaCurto(c.vencimento) + ")").join(", ")) + "</p></section>"; }
   if (!L.levOk) h += '<section class="card warn"><h2>Levantamento das últimas semanas</h2><p>Vamos acertar as cargas das últimas 2 semanas e lançar os gastos do mês passado. Depois é só o app ficar de olho nas notificações.</p><div class="btns"><button class="pri" data-acao="lev-abrir">Começar</button></div></section>';
   if (pend.length) h += '<h2 style="margin-top:16px">Preciso de você (' + pend.length + ")</h2>" + pend.slice(0, 3).map(perguntaHtml).join("") + (pend.length > 3 ? '<p class="hint">Mais ' + (pend.length - 3) + " depois dessas.</p>" : "");
   h += navMes("mes-inicio") +
@@ -356,6 +384,62 @@ function vFicha(p) {
     '<section class="card"><h2>Recebeu</h2>' + (f.pix.length ? f.pix.sort((a, b) => msDe(a.quando) - msDe(b.quando)).map(linhaMovHtml).join("") : '<p class="muted">Nenhum Pix neste mês.</p>') + '<div class="row" style="margin-top:8px"><b>Total no mês</b><b>' + brl(f.recebeu) + "</b></div></section>";
 }
 
+const CORES = { ent: "var(--ok)", carga: "#C2562F", gcarga: "var(--emp)", gemp: "#14858A", gpes: "var(--pes)", conta: "var(--warn)", vencida: "var(--danger)" };
+const LEG = [["ent", "Entrou dinheiro"], ["carga", "Entrega da Tijolos"], ["gcarga", "Gasto das entregas"], ["gemp", "Outro gasto da empresa"], ["gpes", "Gasto pessoal"], ["conta", "Conta a pagar"]];
+
+function vAgenda() {
+  const seg = '<div class="filtros">' + [["cal", "Calendário"], ["contas", "Contas"], ["semana", "Semana"]].map(([k, t]) => '<button aria-pressed="' + ((L.vistaAgenda || "cal") === k) + '" data-acao="vista-agenda" data-v="' + k + '">' + t + "</button>").join("") + "</div>";
+  const v = L.vistaAgenda || "cal";
+  return seg + (v === "contas" ? vContas() : v === "semana" ? vSemana() : vCalendario());
+}
+
+function vCalendario() {
+  const hoje = hojeS(), de = L.mes + "-01", ate = fimMes(L.mes), cal = R.calendario(ctx(), de, ate);
+  const sel = L.diaCal && L.diaCal.slice(0, 7) === L.mes ? L.diaCal : (hoje.slice(0, 7) === L.mes ? hoje : de);
+  const pontos = d => { if (!d) return ""; const p = [];
+    if (d.entradas.length || d.dinheiro.length) p.push("ent"); if (d.cargas.length) p.push("carga"); if (d.gCarga.length) p.push("gcarga"); if (d.gEmp.length) p.push("gemp"); if (d.gPes.length) p.push("gpes");
+    if (d.contas.length) p.push(d.contas.some(c => !c.pago_em && c.vencimento < hoje) ? "vencida" : "conta");
+    return '<div class="pts">' + p.map(k => '<i style="background:' + CORES[k] + '"></i>').join("") + "</div>"; };
+  const ini = (pd(de).getDay() + 7) % 7, ndias = +ate.slice(8, 10);
+  let g = '<div class="cal">' + ["D", "S", "T", "Q", "Q", "S", "S"].map(x => '<div class="cab">' + x + "</div>").join("") + "<div></div>".repeat(ini);
+  for (let n = 1; n <= ndias; n++) { const k = L.mes + "-" + String(n).padStart(2, "0"); g += '<button class="dia-cal' + (k === sel ? " sel" : "") + (k === hoje ? " hoje" : "") + '" data-acao="dia-cal" data-d="' + k + '"><span>' + n + "</span>" + pontos(cal[k]) + "</button>"; }
+  g += "</div>";
+  const leg = '<div class="leg">' + LEG.map(([k, t]) => '<span><i style="background:' + CORES[k] + '"></i>' + t + "</span>").join("") + "</div>";
+  return navMes("mes") + '<section class="card">' + g + leg + "</section>" + diaDetalhe(sel, cal[sel]);
+}
+
+function diaDetalhe(k, d) {
+  const soma = l => l.reduce((t, m) => t + +m.valor, 0);
+  const bloco = (cor, titulo, total, corpo) => '<div style="margin-top:12px"><div class="row"><b style="color:' + cor + '">' + titulo + "</b>" + (total != null ? "<b>" + brl(total) + "</b>" : "") + "</div>" + corpo + "</div>";
+  let h = '<section class="card"><h2>' + esc(cap(diaLongo(k))) + "</h2>";
+  if (!d) return h + '<p class="muted">Nada neste dia.</p></section>';
+  if (d.cargas.length) h += bloco(CORES.carga, "Entregas da Tijolos", d.cargas.reduce((t, c) => t + c.entregas.reduce((u, e) => u + R.totalEntrega(e), 0), 0), d.cargas.map(c => c.entregas.map((e, i) => '<div class="row"><span class="grow trunc">' + esc(e.cliente || "Sem nome") + ' <span class="muted">· ' + esc(e.medida || "") + " · " + String(e.mil).replace(".", ",") + " mil</span></span><span>" + brl0(R.totalEntrega(e)) + "</span> " + chipEntrega(c, i) + "</div>").join("")).join(""));
+  if (d.entradas.length || d.dinheiro.length) h += bloco(CORES.ent, "Entrou", soma(d.entradas) + d.dinheiro.reduce((t, x) => t + x.valor, 0), d.entradas.map(linhaMovHtml).join("") + d.dinheiro.map(x => '<div class="row"><span>' + esc(x.e.cliente || "Sem nome") + ' <span class="muted">· ' + (x.situacao === "dinheiro" ? "dinheiro" : "Pix anotado") + "</span></span><span class=\"pos\">+" + brl(x.valor) + "</span></div>").join(""));
+  if (d.gCarga.length) h += bloco(CORES.gcarga, "Gastos das entregas", soma(d.gCarga), d.gCarga.map(linhaMovHtml).join(""));
+  if (d.gEmp.length) h += bloco(CORES.gemp, "Outros gastos da empresa", soma(d.gEmp), d.gEmp.map(linhaMovHtml).join(""));
+  if (d.gPes.length) h += bloco(CORES.gpes, "Gastos pessoais", soma(d.gPes), d.gPes.map(linhaMovHtml).join(""));
+  if (d.contas.length) h += bloco(CORES.conta, "Contas que vencem", soma(d.contas), d.contas.map(linhaConta).join(""));
+  return h + "</section>";
+}
+
+const TIPOS_CONTA = { cartao: "Fatura do cartão", boleto: "Boleto", parcela: "Parcela", fixa: "Conta fixa", outra: "Outra" };
+function linhaConta(c) {
+  const hoje = hojeS(), venc = !c.pago_em && c.vencimento < hoje;
+  return '<div class="mv" data-acao="editar-conta" data-id="' + c.id + '"><div class="grow"><div class="trunc"><b>' + esc(c.descricao) + "</b>" + (c.parcela ? ' <span class="muted">' + c.parcela + "/" + c.parcelas + "</span>" : "") + '</div><div class="muted trunc">' + TIPOS_CONTA[c.tipo] + " · vence " + diaCurto(c.vencimento) + " " + (c.pago_em ? '<span class="chip green">Paga ' + diaCurto(c.pago_em) + "</span>" : venc ? '<span class="chip red">Vencida</span>' : "") + " " + chipEscopo(c) + '</div></div><div class="v ' + (venc ? "neg" : "") + '">' + brl(c.valor) + "</div>" + (c.pago_em ? "" : '<button class="small" data-acao="pagar-conta" data-id="' + c.id + '">Paguei</button>') + "</div>";
+}
+
+function vContas() {
+  const hoje = hojeS(), ab = R.contasAbertas(ctx(), hoje), venc = ab.filter(c => c.vencida), prox = ab.filter(c => !c.vencida);
+  const mes30 = prox.filter(c => c.vencimento <= addDias(hoje, 30));
+  const pagas = D.contas.filter(c => c.pago_em && c.pago_em >= addDias(hoje, -45)).sort((a, b) => b.pago_em.localeCompare(a.pago_em));
+  const tot = l => l.reduce((t, c) => t + +c.valor, 0);
+  return '<div class="btns"><button class="pri" data-acao="nova-conta">+ Nova conta</button></div>' +
+    '<section class="card"><div class="stats"><div class="stat"><div class="l">Vencidas</div><div class="v neg">' + brl0(tot(venc)) + '</div></div><div class="stat"><div class="l">Próximos 30 dias</div><div class="v" style="color:var(--warn)">' + brl0(tot(mes30)) + '</div></div></div><p class="hint">Faturas do cartão entram sozinhas quando o banco avisa que fechou. Quando você paga, eu dou baixa sozinho.</p></section>' +
+    (venc.length ? '<section class="card red"><h2 style="color:var(--danger)">Vencidas</h2>' + venc.map(linhaConta).join("") + "</section>" : "") +
+    '<section class="card"><h2>A pagar</h2>' + (prox.length ? prox.map(linhaConta).join("") : '<p class="muted">Nenhuma conta cadastrada.</p>') + "</section>" +
+    (pagas.length ? '<details class="card"><summary><b>Pagas recentemente</b></summary>' + pagas.map(linhaConta).join("") + "</details>" : "");
+}
+
 function vSemana() {
   const de = L.semana, ate = addDias(de, 6), r = R.resumoPeriodo(ctx(), de, ate);
   const barras = (l, cor) => { const mx = Math.max(1, ...l.map(x => x.v)); return l.map(x => '<div style="margin:8px 0"><div class="row"><span>' + esc(x.nome) + "</span><span>" + brl0(x.v) + '</span></div><div class="bar" style="width:' + Math.max(2, x.v / mx * 100) + "%;background:" + cor + '"></div></div>').join("") || '<p class="muted">Nada.</p>'; };
@@ -396,6 +480,7 @@ function vMais() {
     '<section class="card"><h2>O que o app já aprendeu</h2>' + (D.regras.length ? D.regras.map(r => { const c = catDe(r.categoria_id), p = pessoaDe(r.pessoa_id); return '<div class="row" style="padding:6px 0;border-top:1px solid var(--line)"><span class="grow trunc">' + esc(r.padrao) + ' <span class="muted">→ ' + esc(r.cliente ? "cliente " + r.cliente : p ? p.nome : c ? c.nome : "?") + "</span></span><button class=\"small\" data-acao=\"apagar-regra\" data-id=\"" + r.id + '">Esquecer</button></div>'; }).join("") : '<p class="muted">Ainda nada. Cada resposta sua vira uma regra aqui.</p>') + "</section>" +
     '<section class="card"><h2>Ajustes</h2><div class="field"><label for="desde">Alertas de entregas a partir de</label><input type="date" id="desde" value="' + L.desde + '"></div>' +
     (NATIVO ? '<p>Leitura das notificações: <b>' + (liberado ? "ligada" : "desligada") + '</b></p><div class="btns"><button data-acao="liberar">Abrir ajustes de notificação</button></div>' : "") +
+    '<p class="hint">Versão do app: 1.0.' + (window.VERSAO_APP || 0) + (NATIVO ? ' · <button class="small ghost" data-acao="procurar-versao">Procurar atualização</button>' : "") + "</p>" +
     '<p class="hint">Bancos lidos: ' + esc([...new Set(Object.values(LE.BANCOS))].join(", ")) + ", Sicoob e Sicredi.</p>" +
     '<div class="btns"><button data-acao="lev-abrir">Abrir o levantamento</button><button data-acao="sair">Sair</button></div></section>';
 }
@@ -411,7 +496,7 @@ function render() {
   const nPend = D.movs.filter(m => m.pendente && !m.ignorado).length + R.alertas(ctx(), Date.now(), L.desde).length + R.cargasSemAjudante(ctx(), hojeS(), L.desde).length;
   document.getElementById("tabs").innerHTML = TABS.map(([k, t]) => '<button data-tab="' + k + '"' + (L.tab === k ? ' aria-current="page"' : "") + ">" + svg(k) + t + (k === "inicio" && nPend ? '<span class="badge">' + nPend + "</span>" : "") + "</button>").join("");
   const topo = (erro ? '<div class="errmsg" role="alert">' + esc(erro) + "</div>" : "") + (msg ? '<div class="okmsg" role="status">' + esc(msg) + "</div>" : "");
-  main.innerHTML = topo + ({ inicio: vInicio, cargas: vCargas, movs: vMovs, pessoas: vPessoas, semana: vSemana, mais: vMais, lev: vLev })[L.tab]();
+  main.innerHTML = topo + ({ inicio: vInicio, cargas: vCargas, movs: vMovs, pessoas: vPessoas, semana: vAgenda, mais: vMais, lev: vLev })[L.tab]();
   if (L.tab === "inicio") mostrarAlertasSePrecisar();
 }
 
@@ -475,6 +560,28 @@ function janelaPessoa(p) {
 function janelaOutraEntrega(m) {
   const ab = R.entregasAbertas(ctx()).sort((a, b) => b.carga.data.localeCompare(a.carga.data));
   abrirJanela("<h2>De qual entrega é " + brl(m.valor) + "?</h2>" + (ab.length ? '<div class="btns col">' + ab.slice(0, 40).map(x => '<button data-acao="ligar" data-id="' + m.id + '" data-carga="' + x.carga.id + '" data-i="' + x.i + '">' + esc(x.e.cliente || "Sem nome") + " · carga " + diaCurto(x.carga.data) + " · falta " + brl(x.falta) + "</button>").join("") + "</div>" : '<p class="muted">Nenhuma entrega em aberto.</p>') + '<div class="btns"><button data-acao="fechar">Cancelar</button></div>');
+}
+
+function janelaConta(c) {
+  const n = !c;
+  c = c || { descricao: "", valor: "", vencimento: hojeS(), tipo: "boleto", escopo: "pessoal" };
+  abrirJanela("<h2>" + (n ? "Nova conta" : "Conta") + '</h2><div class="field"><label for="ct-desc">Descrição</label><input id="ct-desc" value="' + esc(c.descricao) + '" placeholder="Ex.: Boleto do caminhão, Celular, Parcela da geladeira"></div>' +
+    '<div class="grid2"><div class="field"><label for="ct-valor">Valor (R$)</label><input id="ct-valor" inputmode="decimal" value="' + (c.valor ? String(c.valor).replace(".", ",") : "") + '"></div><div class="field"><label for="ct-venc">' + (n ? "Primeiro vencimento" : "Vencimento") + '</label><input type="date" id="ct-venc" value="' + c.vencimento + '"></div></div>' +
+    '<div class="grid2"><div class="field"><label for="ct-tipo">Tipo</label><select id="ct-tipo">' + Object.entries(TIPOS_CONTA).map(([k, t]) => '<option value="' + k + '"' + (c.tipo === k ? " selected" : "") + ">" + t + "</option>").join("") + '</select></div><div class="field"><label for="ct-escopo">De quem</label><select id="ct-escopo"><option value="pessoal"' + (c.escopo === "pessoal" ? " selected" : "") + '>Pessoal</option><option value="empresa"' + (c.escopo === "empresa" ? " selected" : "") + ">Empresa</option></select></div></div>" +
+    (n ? '<div class="field"><label for="ct-n">Quantas vezes (parcelas, ou meses da conta fixa)</label><input id="ct-n" inputmode="numeric" value="1"><p class="hint">Parcela: cria uma conta por mês. Conta fixa: repete todo mês (12 se deixar em branco).</p></div>' : '<label class="row" style="justify-content:flex-start;margin:10px 0"><input type="checkbox" id="ct-pago"' + (c.pago_em ? " checked" : "") + "> <span>Já está paga</span></label>") +
+    '<div class="btns"><button class="pri" data-acao="salvar-conta" data-id="' + (c.id || "") + '">Salvar</button><button data-acao="fechar">Cancelar</button>' + (n ? "" : '<button class="danger" data-acao="apagar-conta" data-id="' + c.id + '">Apagar</button>' + (c.grupo ? '<button class="danger" data-acao="apagar-conta" data-todas="1" data-id="' + c.id + '">Apagar as próximas</button>' : "")) + "</div>");
+}
+
+let novaVersao = null, atualizando = "";
+const REPO = "tannya1977tavares-cyber/Controle-financeiro_Bruno_Tavares";
+async function procurarVersao() {
+  if (!NATIVO) return;
+  try {
+    const r = await fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } });
+    if (!r.ok) return;
+    const j = await r.json(), n = parseInt(String(j.tag_name || "").split(".").pop()), a = (j.assets || []).find(x => /\.apk$/.test(x.name));
+    novaVersao = a && n > (window.VERSAO_APP || 0) ? { n, url: a.browser_download_url } : null;
+  } catch (e) {}
 }
 
 /* ---------- aprender ---------- */
@@ -598,6 +705,53 @@ async function acao(a, ds, alvo) {
       out.innerHTML = r.ok ? '<div class="okmsg">' + r.n + " movimento(s) novos. " + (itens.length - novos.length) + " já estavam no app.</div>" : '<div class="errmsg">Não deu pra importar. Confira a internet.</div>';
       render(); return;
     }
+    case "vista-agenda": L.vistaAgenda = ds.v; salvarLocal(); break;
+    case "dia-cal": L.diaCal = ds.d; salvarLocal(); break;
+    case "ir-contas": L.tab = "semana"; L.vistaAgenda = "contas"; salvarLocal(); window.scrollTo(0, 0); break;
+    case "nova-conta": janelaConta(null); return;
+    case "editar-conta": if (alvo.closest("button")) return; janelaConta(D.contas.find(c => c.id === ds.id)); return;
+    case "pagar-conta": {
+      const c = D.contas.find(x => x.id === ds.id); if (!c) return;
+      const r = await sb.from("fin_contas").update({ pago_em: hojeS() }).eq("id", c.id);
+      if (!r.error) { c.pago_em = hojeS(); msg = "Conta marcada como paga."; await agendarLembretes(); }
+      break;
+    }
+    case "salvar-conta": {
+      const desc = valorDe("ct-desc").trim(), v = parseValor(valorDe("ct-valor")), venc = valorDe("ct-venc"), tipo = valorDe("ct-tipo"), es = valorDe("ct-escopo") || null;
+      if (!desc || !(v > 0) || !venc) { alert("Preencha descrição, valor e vencimento."); return; }
+      if (ds.id) {
+        const pago = document.getElementById("ct-pago").checked;
+        const c = D.contas.find(x => x.id === ds.id), up = { descricao: desc, valor: v, vencimento: venc, tipo, escopo: es, pago_em: pago ? (c.pago_em || hojeS()) : null };
+        const r = await sb.from("fin_contas").update(up).eq("id", ds.id);
+        if (r.error) { erro = "Não deu pra salvar."; break; }
+        Object.assign(c, up);
+      } else {
+        const n = tipo === "parcela" ? Math.max(1, Math.min(72, parseInt(valorDe("ct-n")) || 1)) : tipo === "fixa" ? Math.max(1, Math.min(36, parseInt(valorDe("ct-n")) || 12)) : 1;
+        const grupo = n > 1 ? crypto.randomUUID() : null, rows = [];
+        for (let k = 0; k < n; k++) { const d = pd(venc); const dia = d.getDate(); d.setMonth(d.getMonth() + k); if (d.getDate() !== dia) d.setDate(0); rows.push({ descricao: desc, valor: v, vencimento: ymd(d), tipo, escopo: es, grupo, parcela: tipo === "parcela" && n > 1 ? k + 1 : null, parcelas: tipo === "parcela" && n > 1 ? n : null }); }
+        const r = await sb.from("fin_contas").insert(rows).select();
+        if (r.error) { erro = "Não deu pra salvar."; break; }
+        D.contas = D.contas.concat(r.data.map(c => ({ ...c, vencimento: String(c.vencimento).slice(0, 10) })));
+      }
+      fecharJanela(); await agendarLembretes(); msg = "Conta salva."; break;
+    }
+    case "apagar-conta": {
+      const c = D.contas.find(x => x.id === ds.id); if (!c) return;
+      const todas = ds.todas === "1" && c.grupo;
+      if (!confirm(todas ? "Apagar esta e as próximas parcelas ainda não pagas?" : "Apagar esta conta?")) return;
+      const q = todas ? sb.from("fin_contas").delete().eq("grupo", c.grupo).is("pago_em", null).gte("vencimento", c.vencimento) : sb.from("fin_contas").delete().eq("id", c.id);
+      const r = await q; if (r.error) { erro = "Não deu pra apagar."; break; }
+      D.contas = D.contas.filter(x => todas ? !(x.grupo === c.grupo && !x.pago_em && x.vencimento >= c.vencimento) : x.id !== c.id);
+      fecharJanela(); await agendarLembretes(); break;
+    }
+    case "atualizar-app": {
+      if (!novaVersao || !Avisos) return;
+      atualizando = "Baixando a versão nova…"; render();
+      try { await Avisos.atualizar({ url: novaVersao.url }); atualizando = "Toque em Instalar na tela do Android."; }
+      catch (e) { atualizando = String(e && e.message).includes("PERMITIR") ? "Libere \"Instalar apps desconhecidos\" pro Financeiro Tavares e toque em Atualizar de novo." : "Não deu pra baixar. Confira a internet e tente de novo."; }
+      break;
+    }
+    case "procurar-versao": await procurarVersao(); msg = novaVersao ? "Tem versão nova! Veja no Início." : "Você já está na versão mais nova."; break;
     case "lev-abrir": L.tab = "lev"; salvarLocal(); render(); window.scrollTo(0, 0); return;
     case "lev-sair": L.tab = "inicio"; salvarLocal(); render(); window.scrollTo(0, 0); return;
     case "lev-fim": L.levOk = true; if (L.desde > addDias(hojeS(), -14)) L.desde = addDias(hojeS(), -14); L.tab = "inicio"; L.alertaFechado = 0; salvarLocal(); msg = "Levantamento feito. Agora é só eu ficar de olho nas notificações."; await agendarLembretes(); window.scrollTo(0, 0); break;
@@ -734,6 +888,7 @@ async function entrar(user) {
   main.innerHTML = '<div class="carregando">Carregando…</div>';
   await carregar(); render();
   sincronizar(true);
+  procurarVersao().then(() => { if (novaVersao) render(); });
 }
 
 (async function iniciar() {

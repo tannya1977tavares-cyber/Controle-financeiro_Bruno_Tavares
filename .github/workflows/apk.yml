@@ -29,12 +29,23 @@ jobs:
         run: npm install
 
       - name: Copiar bibliotecas pro app
-        run: npm run libs
+        run: |
+          npm run libs
+          echo "window.VERSAO_APP = ${{ github.run_number }};" > www/versao.js
+
+      - name: Assinatura fixa (pra atualizar por cima sem desinstalar)
+        env:
+          ASSINATURA: ${{ secrets.ASSINATURA_APK }}
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$ASSINATURA" ]; then echo "$ASSINATURA" | base64 -d > ~/.android/debug.keystore; echo "assinatura do segredo";
+          elif [ -f assinatura/financeiro.keystore ]; then cp assinatura/financeiro.keystore ~/.android/debug.keystore; echo "assinatura do repositório";
+          else echo "sem assinatura fixa"; fi
 
       - name: Criar projeto Android
         run: |
           npx cap add android
-          python3 scripts/preparar-android.py
+          VERSAO=${{ github.run_number }} python3 scripts/preparar-android.py
           npx cap sync android
 
       - name: Montar APK

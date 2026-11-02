@@ -10,7 +10,7 @@ for arq in (raiz / "native").glob("*.java"):
 
 manifesto = app / "AndroidManifest.xml"
 txt = manifesto.read_text(encoding="utf-8")
-perms = ["android.permission.POST_NOTIFICATIONS", "android.permission.SCHEDULE_EXACT_ALARM", "android.permission.RECEIVE_BOOT_COMPLETED"]
+perms = ["android.permission.POST_NOTIFICATIONS", "android.permission.SCHEDULE_EXACT_ALARM", "android.permission.RECEIVE_BOOT_COMPLETED", "android.permission.REQUEST_INSTALL_PACKAGES", "android.permission.INTERNET"]
 extra = "".join(f'    <uses-permission android:name="{p}" />\n' for p in perms if p not in txt)
 txt = txt.replace("</manifest>", extra + "</manifest>")
 servico = """
@@ -35,4 +35,13 @@ for pasta in (raiz / "android-res").iterdir():
     for arq in pasta.iterdir():
         shutil.copy(arq, destino / arq.name)
 
-print("Android preparado")
+# número da versão: cresce a cada APK, pra o Android aceitar atualizar por cima
+import os, re
+n = os.environ.get("VERSAO", "1")
+gradle = raiz / "android" / "app" / "build.gradle"
+g = gradle.read_text(encoding="utf-8")
+g = re.sub(r"versionCode \d+", f"versionCode {n}", g)
+g = re.sub(r'versionName "[^"]*"', f'versionName "1.0.{n}"', g)
+gradle.write_text(g, encoding="utf-8")
+
+print("Android preparado, versão 1.0." + n)
