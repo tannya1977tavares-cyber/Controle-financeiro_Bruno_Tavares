@@ -184,6 +184,77 @@ function lerExtrato(txt, nomeArquivo, banco) {
   return out;
 }
 
-const api = { vencimentoDe, BANCOS, nomeBanco, lerAviso, lerExtrato, norm, numero };
+
+/* ---------- comprovantes (texto lido da foto/PDF) ---------- */
+const MESES = { jan: 1, fev: 2, mar: 3, abr: 4, mai: 5, jun: 6, jul: 7, ago: 8, set: 9, out: 10, nov: 11, dez: 12 };
+const ROT_DESTINO = /^(destino|destinat[aá]rio|para|recebedor|favorecido|benefici[aá]rio|quem recebeu|nome do recebedor|dados do recebedor|creditado|conta de destino)\b/i;
+const ROT_ORIGEM = /^(origem|de|pagador|quem pagou|remetente|dados do pagador|debitado|conta de origem|nome do pagador)\b/i;
+const NAO_NOME = /^(nome|cpf|cnpj|institui|banco|ag[eê]ncia|conta|chave|tipo|valor|data|hora|id|identificador|c[oó]digo|autentica|\*|•|\d)/i;
+
+function linhasDe(texto) { return String(texto || "").replace(/\r/g, "").split("\n").map(s => s.replace(/\s+/g, " ").trim()).filter(Boolean); }
+
+function dataComprovante(t) {
+  let m = t.match(/(\d{2})\/(\d{2})\/(\d{4})(?:\D{1,8}(\d{1,2})[:h](\d{2}))?/);
+  if (m) return new Date(+m[3], +m[2] - 1, +m[1], m[4] ? +m[4] : 12, m[5] ? +m[5] : 0).getTime();
+  m = norm(t).match(/(\d{1,2})(?: de)? (jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)[a-z]*\.?(?: de)? (\d{4})(?:\D{1,8}(\d{1,2})[:h](\d{2}))?/);
+  if (m) return new Date(+m[3], MESES[m[2]] - 1, +m[1], m[4] ? +m[4] : 12, m[5] ? +m[5] : 0).getTime();
+  m = t.match(/(\d{4})-(\d{2})-(\d{2})(?:\D{1,3}(\d{2}):(\d{2}))?/);
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3], m[4] ? +m[4] : 12, m[5] ? +m[5] : 0).getTime();
+  return NaN;
+}
+
+// nome logo depois de um rótulo (na mesma linha ou nas próximas)
+function nomeApos(L, rot) {
+  for (let i = 0; i < L.length; i++) {
+    const s = L[i].replace(/^[\s:•-]+/, "");
+    if (!rot.test(s)) continue;
+    const resto = s.replace(rot, "").replace(/^[\s:.-]+/, "").replace(/^nome[\s:]+/i, "");
+    if (resto && !NAO_NOME.test(resto) && /[a-zà-ú]{2}/i.test(resto)) return limparNome(resto);
+    for (let k = i + 1; k < Math.min(L.length, i + 5); k++) {
+      let c = L[k].replace(/^nome[\s:]+/i, "");
+      if (/^nome$/i.test(L[k])) continue;
+      if (c && !NAO_NOME.test(c) && /[a-zà-ú]{3}/i.test(c) && !RE_VALOR.test(c)) return limparNome(c);
+    }
+  }
+  return "";
+}
+
+function valorComprovante(L, t) {
+  for (let i = 0; i < L.length; i++) {
+    if (!/\bvalor\b|\btotal\b|valor pago|valor da transfer|valor do pix/i.test(L[i]) || /desconto|juros|multa|tarifa|original|saldo/i.test(L[i])) continue;
+    const m = (L[i] + " " + (L[i + 1] || "")).match(RE_VALOR) || (L[i + 1] || "").match(/^(\d{1,3}(?:\.\d{3})*,\d{2})$/);
+    if (m) return Math.abs(numero(m[1]));
+  }
+  const m = t.match(RE_VALOR);
+  return m ? Math.abs(numero(m[1])) : NaN;
+}
+
+/* texto -> {tipo, valor, quando, contraparte, banco, boleto, vencimento, texto} ou null
+   donos: nomes que são do Bruno/da empresa (pra saber se o dinheiro entrou ou saiu) */
+function lerComprovante(texto, quandoPadrao, donos) {
+  const L = linhasDe(texto), t = L.join("\n"), n = norm(t);
+  if (!L.length) return null;
+  const valor = valorComprovante(L, t);
+  if (!isFinite(valor) || valor <= 0) return null;
+  const linhaPag = L.find(s => /pagamento|pago em|realizad|efetuad|data da transa|data e hora/i.test(s) && isFinite(dataComprovante(s)));
+  let quando = linhaPag ? dataComprovante(linhaPag) : dataComprovante(L.filter(s => !/venc/i.test(s)).join("\n"));
+  if (!isFinite(quando)) quando = quandoPadrao || Date.now();
+  const destino = nomeApos(L, ROT_DESTINO), origem = nomeApos(L, ROT_ORIGEM);
+  const ehDono = nome => nome && (donos || ["tavares"]).some(d => d && norm(nome).includes(norm(d)));
+  const boleto = /boleto|linha digit[aá]vel|c[oó]digo de barras/.test(n) && !/\bpix\b/.test(n);
+  const pago = /comprovante|pagamento (efetuado|realizado)|pago em|data do pagamento|transa[cç][aã]o (efetuada|realizada)|enviad|transfer[eê]ncia realizada/.test(n);
+  let tipo;
+  if (/voc[eê] recebeu|pix recebido|transfer[eê]ncia recebida|recebimento|dep[oó]sito recebido/.test(n)) tipo = "entrada";
+  else if (ehDono(destino) && !ehDono(origem)) tipo = "entrada";
+  else tipo = "saida";
+  let contraparte = tipo === "entrada" ? (origem || "") : (destino || "");
+  if (boleto && !contraparte) contraparte = nomeApos(L, /^(benefici[aá]rio|cedente|empresa|raz[aã]o social)\b/i);
+  let vencimento = null;
+  if (boleto) { const v = t.match(/venc\w*[^\d]{0,20}(\d{2})\/(\d{2})\/(\d{4})/i); if (v) vencimento = v[3] + "-" + v[2] + "-" + v[1]; }
+  const banco = (/nubank|nu pagamentos/.test(n) && "Nubank") || (/\bitau\b/.test(n) && "Itaú") || (/bradesco/.test(n) && "Bradesco") || (/santander/.test(n) && "Santander") || (/banco do brasil|\bbb\b/.test(n) && "Banco do Brasil") || (/caixa/.test(n) && "Caixa") || (/\binter\b/.test(n) && "Inter") || (/\bc6\b/.test(n) && "C6") || (/picpay/.test(n) && "PicPay") || (/mercado pago/.test(n) && "Mercado Pago") || (/sicoob/.test(n) && "Sicoob") || (/sicredi/.test(n) && "Sicredi") || "";
+  return { tipo, valor: Math.round(valor * 100) / 100, quando, contraparte, banco, boleto, aPagar: boleto && !pago, vencimento, texto: t.slice(0, 2000) };
+}
+
+const api = { lerComprovante, dataComprovante, vencimentoDe, BANCOS, nomeBanco, lerAviso, lerExtrato, norm, numero };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Leitura = api;
 })(typeof window !== "undefined" ? window : globalThis);

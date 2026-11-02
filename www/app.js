@@ -136,6 +136,44 @@ async function sincronizar(silencioso) {
   sincronizando = false; render();
 }
 
+/* ---------- comprovantes vindos do botão Compartilhar ---------- */
+let filaComp = [], lendoComp = false;
+async function pegarCompartilhados() {
+  if (!Avisos || !D.perfil) return;
+  try {
+    const r = await Avisos.pegarCompartilhado();
+    lendoComp = !!r.lendo;
+    (r.itens || []).forEach(it => filaComp.push(it));
+    if (lendoComp && !filaComp.length) { msg = "Lendo o comprovante…"; render(); }
+    if (!modal.innerHTML && filaComp.length) janelaComprovante(filaComp.shift());
+  } catch (e) {}
+}
+function donos() { const n = (D.perfil && D.perfil.nome) || ""; return ["tavares"].concat(/\s/.test(n.trim()) ? [n] : []); }
+function parecidoJaAnotado(c) {
+  return D.movs.find(m => !m.ignorado && m.tipo === c.tipo && Math.abs(+m.valor - c.valor) < 0.01 && Math.abs(msDe(m.quando) - c.quando) < 2 * 864e5);
+}
+let compAtual = null;
+function janelaComprovante(it) {
+  if (it.erro || !it.texto) { abrirJanela('<h2>Comprovante</h2><div class="errmsg">' + esc(it.erro || "Não achei texto nesse arquivo.") + '</div><p class="muted">Se quiser, lance à mão.</p><div class="btns"><button class="pri" data-acao="comp-manual">Lançar à mão</button><button data-acao="comp-prox">Fechar</button></div>'); return; }
+  const c = LE.lerComprovante(it.texto, Date.now(), donos());
+  if (!c) { abrirJanela('<h2>Comprovante</h2><p>Não achei o valor nesse comprovante.</p><details class="card"><summary>Ver o texto que li</summary><pre style="white-space:pre-wrap;font-size:13px">' + esc(it.texto.slice(0, 1500)) + '</pre></details><div class="btns"><button class="pri" data-acao="comp-manual">Lançar à mão</button><button data-acao="comp-prox">Fechar</button></div>'); return; }
+  compAtual = c;
+  const q = new Date(c.quando), ja = c.aPagar ? null : parecidoJaAnotado(c);
+  const campos = '<div class="grid2"><div class="field"><label for="cp-tipo">Tipo</label><select id="cp-tipo"><option value="saida"' + (c.tipo === "saida" ? " selected" : "") + '>Saída (paguei)</option><option value="entrada"' + (c.tipo === "entrada" ? " selected" : "") + '>Entrada (recebi)</option></select></div><div class="field"><label for="cp-valor">Valor (R$)</label><input id="cp-valor" inputmode="decimal" value="' + String(c.valor.toFixed(2)).replace(".", ",") + '"></div></div>' +
+    '<div class="field"><label for="cp-quem">' + (c.boleto ? "Boleto de" : "Com quem") + '</label><input id="cp-quem" value="' + esc(c.contraparte) + '" placeholder="Nome de quem pagou ou recebeu"></div>' +
+    '<div class="grid2"><div class="field"><label for="cp-dia">' + (c.aPagar ? "Vencimento" : "Dia") + '</label><input type="date" id="cp-dia" value="' + (c.aPagar && c.vencimento ? c.vencimento : R.diaDe(c.quando)) + '"></div><div class="field"><label for="cp-hora">Hora</label><input type="time" id="cp-hora" value="' + q.toTimeString().slice(0, 5) + '"></div></div>';
+  let acoes;
+  if (c.aPagar) acoes = '<p class="muted">Esse boleto ainda não foi pago. Guardo em Contas e te lembro no vencimento.</p><div class="btns"><button class="pri" data-acao="comp-conta">Guardar em Contas</button><button data-acao="comp-lancar">Já paguei, lançar gasto</button><button data-acao="comp-prox">Cancelar</button></div>';
+  else if (ja) acoes = '<div class="card warn" style="margin:8px 0"><b>Parece que já está anotado:</b><br>' + esc(diaCurto(R.diaDe(msDe(ja.quando)))) + " · " + esc(ja.contraparte || "sem nome") + " · " + brl(ja.valor) + '</div><div class="btns"><button class="pri" data-acao="comp-mesmo" data-id="' + ja.id + '">É o mesmo, completar o nome</button><button data-acao="comp-lancar">É outro, lançar</button><button data-acao="comp-prox">Cancelar</button></div>';
+  else acoes = '<div class="btns"><button class="pri" data-acao="comp-lancar">Lançar</button><button data-acao="comp-prox">Cancelar</button></div>';
+  abrirJanela("<h2>Comprovante lido" + (c.banco ? ' <span class="chip">' + esc(c.banco) + "</span>" : "") + '</h2><p class="hint">Confira se li certo. Se algo estiver errado, é só corrigir aqui.</p>' + campos + acoes);
+}
+function valoresComprovante() {
+  const [y, mo, d] = valorDe("cp-dia").split("-").map(Number), [hh, mi] = (valorDe("cp-hora") || "12:00").split(":").map(Number);
+  return { tipo: valorDe("cp-tipo"), valor: parseValor(valorDe("cp-valor")), contraparte: valorDe("cp-quem").trim(), dia: valorDe("cp-dia"), quando: new Date(y, mo - 1, d, hh, mi).getTime() };
+}
+function proximoComprovante() { fecharJanela(); compAtual = null; if (filaComp.length) janelaComprovante(filaComp.shift()); }
+
 /* ---------- pagamentos das entregas ---------- */
 async function marcarTijolos(cid, i, pag, entregue) {
   const adm = D.admin[cid];
@@ -773,6 +811,25 @@ async function acao(a, ds, alvo) {
       catch (e) { atualizando = String(e && e.message).includes("PERMITIR") ? "Libere \"Instalar apps desconhecidos\" pro Financeiro Tavares e toque em Atualizar de novo." : "Não deu pra baixar. Confira a internet e tente de novo."; }
       break;
     }
+    case "comp-prox": proximoComprovante(); render(); return;
+    case "comp-manual": filaComp.length ? proximoComprovante() : janelaNovoMov(); return;
+    case "comp-lancar": {
+      const v = valoresComprovante(); if (!(v.valor > 0)) { alert("Coloque o valor."); return; }
+      const r = await inserirMovs([{ chave: "comp|" + v.tipo + "|" + v.valor + "|" + v.quando + "|" + v.contraparte.slice(0, 20), origem: "comprovante", tipo: v.tipo, valor: v.valor, contraparte: v.contraparte, texto: (compAtual && compAtual.texto) || "", banco: (compAtual && compAtual.banco) || "Comprovante", quando: v.quando }]);
+      if (!r.ok) erro = "Não deu pra salvar."; else msg = "Comprovante lançado. Se eu não souber a categoria, pergunto no Início.";
+      proximoComprovante(); break;
+    }
+    case "comp-mesmo": {
+      const v = valoresComprovante(), alvoM = movDe(ds.id);
+      if (alvoM && v.contraparte && !alvoM.contraparte) { await sb.from("fin_movimentos").update({ contraparte: v.contraparte }).eq("id", alvoM.id); await carregar(); }
+      msg = "Esse já estava anotado. Tudo certo."; proximoComprovante(); break;
+    }
+    case "comp-conta": {
+      const v = valoresComprovante(); if (!(v.valor > 0) || !v.dia) { alert("Coloque o valor e o vencimento."); return; }
+      const r = await sb.from("fin_contas").upsert({ chave: "comp|" + v.dia + "|" + v.valor + "|" + v.contraparte.slice(0, 30), descricao: v.contraparte || "Boleto", tipo: "boleto", valor: v.valor, vencimento: v.dia, escopo: "empresa", banco: (compAtual && compAtual.banco) || null }, { onConflict: "chave" });
+      if (r.error) erro = "Não deu pra salvar a conta."; else { msg = "Boleto guardado em Contas."; await carregar(); await agendarLembretes(); }
+      proximoComprovante(); break;
+    }
     case "abrir-excel": await abrirExcel(); break;
     case "procurar-versao": await procurarVersao(); msg = novaVersao ? "Tem versão nova! Veja no Início." : "Você já está na versão mais nova."; break;
     case "lev-abrir": L.tab = "lev"; salvarLocal(); render(); window.scrollTo(0, 0); return;
@@ -902,7 +959,8 @@ document.addEventListener("submit", async e => {
   await entrar(data.user);
 });
 document.getElementById("syncbtn").addEventListener("click", () => { erro = ""; sincronizar(false); render(); });
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && D.perfil) sincronizar(true); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && D.perfil) { sincronizar(true); pegarCompartilhados(); } });
+if (Avisos && Avisos.addListener) { try { Avisos.addListener("compartilhado", () => pegarCompartilhados()); } catch (e) {} }
 
 async function entrar(user) {
   const { data } = await sb.from("profiles").select("*").eq("id", user.id).single();
@@ -911,6 +969,7 @@ async function entrar(user) {
   main.innerHTML = '<div class="carregando">Carregando…</div>';
   await carregar(); render();
   sincronizar(true);
+  pegarCompartilhados();
   procurarVersao().then(() => { if (novaVersao) render(); });
 }
 
