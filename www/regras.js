@@ -24,7 +24,21 @@ const FORA = ["dinheiro", "pix_manual"];
 const RE_PAGFATURA = /\b(pagamento (de |da )?fatura|fatura do cartao|fatura nubank|pagamento recebido)\b/;
 const RE_CERAMICA = /\b(ceramica\w*|olaria\w*|tijol\w*)\b/;
 const FORNECEDORES = { anapolina: "Cerâmica Anapolina", outra: "Outra cerâmica" };
-const fornecedorDoNome = n => /anapolina/.test(norm(n)) ? "anapolina" : "outra";
+/* fornecedores vêm do cadastro do app da Tijolos (Configurações > Cadastros) */
+function definirFornecedores(lista) {
+  if (!lista || !lista.length) return;
+  Object.keys(FORNECEDORES).forEach(k => delete FORNECEDORES[k]);
+  lista.forEach(f => { FORNECEDORES[f.id] = f.nome; });
+  if (!FORNECEDORES.outra) FORNECEDORES.outra = "Outra cerâmica";
+}
+const fornecedorDoNome = n => {
+  const t = norm(n);
+  for (const [id, nome] of Object.entries(FORNECEDORES)) {
+    const chave = norm(nome).replace(/\b(ceramica|olaria|tijolos?|de|da|do)\b/g, "").trim();
+    if (id !== "outra" && chave.length >= 3 && t.includes(chave)) return id;
+  }
+  return /anapolina/.test(t) && FORNECEDORES.anapolina ? "anapolina" : "outra";
+};
 
 // categorias que entram no custo da carga quando o gasto é no dia dela
 const DA_CARGA = ["Combustível (diesel)", "Pedágio", "Descarga", "Alimentação na viagem"];
@@ -99,7 +113,8 @@ function classificarSaida(m, ctx) {
 }
 
 /* ---------- entregas ---------- */
-const totalEntrega = e => r2((+e.mil || 0) * (+e.preco || 0));
+// tijolo + frete à parte (quando cobrado)
+const totalEntrega = e => r2((+e.mil || 0) * (+e.preco || 0) + (+e.frete || 0));
 
 function pagoEntrega(ctx, cid, i) {
   return r2(ctx.movs.filter(m => m.tipo === "entrada" && !m.ignorado && m.carga_id === cid && m.entrega_idx === i).reduce((s, m) => s + +m.valor, 0));
@@ -227,7 +242,7 @@ function fornecedores(ctx, de, ate, hoje) {
   Object.keys(FORNECEDORES).forEach(k => { out[k] = { chave: k, nome: FORNECEDORES[k], mil: 0, custo: 0, custoEntregue: 0, custoAgendado: 0, semCusto: [], cargas: [], medidas: {}, pagos: [], pago: 0 }; });
   ctx.cargas.forEach(c => {
     const d = String(c.data).slice(0, 10); if (d < de || d > ate) return;
-    const f = out[c.ceramica === "anapolina" ? "anapolina" : "outra"], custos = ((ctx.admin || {})[c.id] || {}).custos || [];
+    const f = out[out[c.ceramica] ? c.ceramica : "outra"], custos = ((ctx.admin || {})[c.id] || {}).custos || [];
     let custoC = 0, milC = 0;
     (c.entregas || []).forEach((e, i) => {
       const mil = +e.mil || 0, cu = +custos[i] || 0;
@@ -242,7 +257,7 @@ function fornecedores(ctx, de, ate, hoje) {
   const tij = cat(ctx, "Compra de tijolo");
   ctx.movs.filter(m => m.tipo === "saida" && !m.ignorado && tij && m.categoria_id === tij.id).forEach(m => {
     const d = diaDe(new Date(m.quando).getTime()); if (d < de || d > ate) return;
-    const f = out[m.fornecedor === "anapolina" ? "anapolina" : "outra"]; f.pagos.push(m); f.pago = r2(f.pago + +m.valor);
+    const f = out[out[m.fornecedor] ? m.fornecedor : "outra"]; f.pagos.push(m); f.pago = r2(f.pago + +m.valor);
   });
   Object.values(out).forEach(f => { f.deveAgora = r2(f.custoEntregue - f.pago); f.deveTudo = r2(f.custo - f.pago); });
   return out;
@@ -306,6 +321,6 @@ function resumoPeriodo(ctx, de, ate) {
   return { entEmp: r2(entEmp), dinheiro, entPes, saiEmp, saiPes, catEmp: porCat("saida", "empresa"), catPes: porCat("saida", "pessoal"), cargas, pendentes, resultadoEmp: r2(entEmp - saiEmp) };
 }
 
-const api = { contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
+const api = { definirFornecedores, contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Regras = api;
 })(typeof window !== "undefined" ? window : globalThis);

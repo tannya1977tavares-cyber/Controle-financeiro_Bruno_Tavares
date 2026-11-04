@@ -16,6 +16,7 @@ function plugin(nome) {
   return (window.Capacitor.Plugins || {})[nome] || null;
 }
 const Avisos = plugin("AvisosBancos"), Notif = plugin("LocalNotifications");
+Aparencia.iniciar("financeiro", ["--brand", "--brand-soft", "--on-brand"]);
 
 /* ---------- utilidades ---------- */
 const brl = v => (+v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -41,7 +42,7 @@ let L = Object.assign({ tab: "inicio", mes: hojeS().slice(0, 7), semana: R.segun
 const salvarLocal = () => gravar("fin-local", L);
 if (!ler("fin-local", null)) salvarLocal(); // guarda a data de início na primeira vez
 let D = vazio();
-function vazio() { return { perfil: null, cats: [], regras: [], pessoas: [], movs: [], cargas: [], admin: {}, fin: {}, ajudantes: [], info: {}, faltas: [], contas: [] }; }
+function vazio() { return { perfil: null, cats: [], regras: [], pessoas: [], movs: [], cargas: [], admin: {}, fin: {}, ajudantes: [], info: {}, faltas: [], contas: [], cadastro: null, rels: [] }; }
 let liberado = true, msg = "", erro = "", sincronizando = false, ultimaSync = null;
 const ctx = () => ({ cats: D.cats, regras: D.regras, pessoas: D.pessoas, movs: D.movs, cargas: D.cargas, admin: D.admin, fin: D.fin, ajudantes: D.ajudantes, info: D.info, faltas: D.faltas, contas: D.contas });
 const catDe = id => D.cats.find(c => c.id === id);
@@ -62,7 +63,10 @@ async function carregar() {
     sb.from("fin_carga_ajudantes").select("*"),
     sb.from("fin_cargas_info").select("*"),
     sb.from("fin_faltas").select("*"),
-    sb.from("fin_contas").select("*").order("vencimento")
+    sb.from("fin_contas").select("*").order("vencimento"),
+    sb.from("config").select("chave,dados").eq("chave", "cadastro"),
+    sb.from("relatorios").select("*").order("numero", { ascending: false }),
+    sb.from("profiles").select("*").eq("id", D.perfil.id).single()
   ]);
   const e = q.find(x => x.error);
   if (e) { erro = "Sem conexão com o servidor. Confira a internet."; return false; }
@@ -74,6 +78,10 @@ async function carregar() {
   D.ajudantes = q[7].data;
   D.info = {}; q[8].data.forEach(i => { D.info[i.carga_id] = i; });
   D.faltas = q[9].data.map(f => ({ ...f, dia: String(f.dia).slice(0, 10) }));
+  D.cadastro = q[11].data && q[11].data[0] ? q[11].data[0].dados : null;
+  if (D.cadastro) R.definirFornecedores(D.cadastro.fornecedores);
+  D.rels = q[12].data || [];
+  if (q[13].data) { D.perfil = q[13].data; Aparencia.aplicar(D.perfil.aparencia); }
   D.contas = q[10].data.map(c => ({ ...c, vencimento: String(c.vencimento).slice(0, 10), pago_em: c.pago_em ? String(c.pago_em).slice(0, 10) : null }));
   return true;
 }
@@ -262,9 +270,10 @@ const ICON = {
   movs: '<path d="M7 4v16M7 4L3 8M7 4l4 4M17 20V4M17 20l-4-4M17 20l4-4"/>',
   pessoas: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.2c3 .2 5.5 2.6 5.5 5.8"/>',
   semana: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  planilhas: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 3v18"/>',
   mais: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'
 };
-const TABS = [["inicio", "Início"], ["cargas", "Cargas"], ["movs", "Movimentos"], ["pessoas", "Pessoas"], ["semana", "Agenda"], ["mais", "Mais"]];
+const TABS = [["inicio", "Início"], ["cargas", "Cargas"], ["movs", "Movimentos"], ["pessoas", "Pessoas"], ["semana", "Agenda"], ["planilhas", "Excel"]];
 const svg = k => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICON[k] + "</svg>";
 
 /* ---------- pedaços de tela ---------- */
@@ -301,8 +310,8 @@ function perguntaHtml(m) {
 function ajudantesHtml(c) {
   const ps = D.pessoas.filter(p => p.ativo);
   return '<div class="card warn" id="aj-' + c.id + '"><h3>Quem foi de ajudante na carga de ' + diaCurto(c.data) + "?</h3><p class=\"muted\">" + esc(c.entregas.map(e => e.cliente || "Sem nome").join(", ")) + "</p>" +
-    (ps.length ? ps.map(p => { const ja = D.ajudantes.find(a => a.carga_id === c.id && a.pessoa_id === p.id); return '<label class="pessoa-linha"><input type="checkbox" data-aj-p="' + p.id + '"' + (ja ? " checked" : "") + '><span class="grow">' + esc(p.nome) + ' <span class="muted">(' + p.tipo + ')</span></span><select data-aj-v="' + p.id + '" aria-label="Valor de ' + esc(p.nome) + '">' + [150, 300, 400].map(v => '<option value="' + v + '"' + ((ja ? +ja.valor : 150) === v ? " selected" : "") + ">" + brl0(v) + "</option>").join("") + (ja && ![150, 300, 400].includes(+ja.valor) ? '<option selected value="' + ja.valor + '">' + brl0(ja.valor) + "</option>" : "") + "</select></label>"; }).join("") : '<p class="hint">Cadastre os ajudantes na aba Pessoas.</p>') +
-    '<p class="hint">R$ 150 cada · R$ 300 se descarregou sozinho · até R$ 400 com muitas entregas.</p><div class="btns"><button class="pri" data-acao="aj-salvar" data-carga="' + c.id + '">Salvar</button><button data-acao="aj-ninguem" data-carga="' + c.id + '">Ninguém foi</button></div></div>';
+    (ps.length ? ps.map(p => { const ja = D.ajudantes.find(a => a.carga_id === c.id && a.pessoa_id === p.id); return '<label class="pessoa-linha"><input type="checkbox" data-aj-p="' + p.id + '"' + (ja ? " checked" : "") + '><span class="grow">' + esc(p.nome) + ' <span class="muted">(' + p.tipo + ')</span></span><input class="aj-v" data-aj-v="' + p.id + '" inputmode="decimal" aria-label="Valor de ' + esc(p.nome) + '" value="' + String(ja ? +ja.valor : (+p.valor_carga || 150)).replace(".", ",") + '"></label>'; }).join("") : '<p class="hint">Cadastre os ajudantes na aba Pessoas.</p>') +
+    '<p class="hint">O valor já vem do cadastro de cada um (Pessoas). Mude aqui se nessa carga foi diferente: R$ 300 se descarregou sozinho, até R$ 400 com muitas entregas.</p><div class="btns"><button class="pri" data-acao="aj-salvar" data-carga="' + c.id + '">Salvar</button><button data-acao="aj-ninguem" data-carga="' + c.id + '">Ninguém foi</button></div></div>';
 }
 
 function chipEntrega(c, i) {
@@ -376,7 +385,7 @@ function vCargasLista() {
       '<div class="stats"><div class="stat"><div class="l">Venda</div><div class="v">' + brl0(r.venda) + '</div></div><div class="stat"><div class="l">Tijolo (cerâmica)</div><div class="v neg">' + brl0(r.tijolo) + '</div></div><div class="stat"><div class="l">Gastos da viagem</div><div class="v neg">' + brl0(r.gastosTotal) + '</div></div><div class="stat"><div class="l">Ajudantes</div><div class="v neg">' + brl0(r.ajudTotal) + "</div></div></div>" +
       '<div class="row" style="margin-top:8px"><b>Lucro da carga</b><b class="' + (r.lucro >= 0 ? "pos" : "neg") + '" style="font-size:20px">' + brl0(r.lucro) + "</b></div>" +
       (r.gastos.length || r.ajud.length ? "<details><summary class=\"muted\">Ver gastos e ajudantes</summary>" + r.gastos.map(linhaMovHtml).join("") + r.ajud.map(a => '<div class="row"><span>' + esc((pessoaDe(a.pessoa_id) || {}).nome || "?") + ' <span class="muted">ajudante</span></span><span>' + brl0(a.valor) + "</span></div>").join("") + "</details>" : "") +
-      '<div class="btns"><button class="small" data-acao="aj-editar" data-carga="' + c.id + '">Ajudantes</button></div></section>';
+      '<div class="btns"><button class="small" data-acao="aj-editar" data-carga="' + c.id + '">Ajudantes</button>' + (relDe(c.id) ? '<button class="small pri" data-acao="rel" data-carga="' + c.id + '">Relatório nº ' + numRel(relDe(c.id)) + " (Excel)</button>" : "") + '</div><p class="hint" id="rm-' + c.id + '"></p></section>';
   }).join("") : '<p class="muted">Nenhuma carga neste mês.</p>');
 }
 
@@ -444,6 +453,38 @@ async function abrirExcel() {
     msg = "Planilha aberta com os dados de agora.";
   } catch (e) { erro = "Não consegui montar a planilha. Confira a internet e tente de novo."; }
   gerandoExcel = false;
+}
+
+/* ---------- Excel: planilha geral e relatórios de viagem por mês ---------- */
+const relDe = id => D.rels.find(r => r.carga_id === id);
+const numRel = r => String(r.numero).padStart(4, "0");
+function dadosRelatorio(c) {
+  const rel = relDe(c.id), fin = {};
+  c.entregas.forEach((e, i) => { if (D.fin[c.id + "|" + i]) fin[i] = D.fin[c.id + "|" + i]; });
+  return RelatorioViagem.dadosDe({ numero: rel ? rel.numero : "", carga: c, custos: (D.admin[c.id] || {}).custos || [], pags: (D.admin[c.id] || {}).pags || [], fin, cadastro: D.cadastro || {}, movs: D.movs, cats: D.cats, ajudantes: D.ajudantes, pessoas: D.pessoas });
+}
+async function abrirRelatorio(cid) {
+  const c = cargaDe(cid), el = document.getElementById("rm-" + cid), aviso = t => { if (el) el.textContent = t; };
+  if (!c) return;
+  aviso("Montando a planilha…");
+  try {
+    const d = dadosRelatorio(c), bytes = RelatorioViagem.montar(d), nome = RelatorioViagem.nomeArquivo(d), b64 = Excel.base64(bytes), tipo = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    const caminho = c.data.slice(0, 7) + "/" + nome;
+    sb.storage.from("relatorios").upload(caminho, new Blob([bytes], { type: tipo }), { upsert: true }).then(r => { if (!r.error) sb.from("relatorios").update({ arquivo: caminho, gerado_em: new Date().toISOString() }).eq("carga_id", cid); });
+    if (NATIVO) await Avisos.abrirArquivo({ nome, base64: b64, tipo });
+    else { const a = document.createElement("a"); a.href = "data:" + tipo + ";base64," + b64; a.download = nome; a.click(); }
+    aviso("Planilha aberta.");
+  } catch (e) { aviso("Não deu pra montar a planilha. Tente de novo."); }
+}
+function vPlanilhas() {
+  const rels = D.rels.map(r => ({ r, c: cargaDe(r.carga_id) })).filter(x => x.c), meses = [...new Set(rels.map(x => x.c.data.slice(0, 7)))].sort().reverse();
+  const linha = x => { const d = dadosRelatorio(x.c), t = RelatorioViagem.calcular(d);
+    return '<div class="row rel"><div class="grow" style="min-width:0"><b>Nº ' + numRel(x.r) + " · " + diaCurto(x.c.data) + '</b><div class="muted trunc">' + esc(d.rota.join(" → ")) + " · " + esc(x.c.vendedor || "") + '</div><div class="hint">Bruto ' + brl0(t.bruto) + " · despesas " + brl0(t.despesas) + ' · <b class="' + (t.liquido >= 0 ? "pos" : "neg") + '">líquido ' + brl0(t.liquido) + '</b></div><p class="hint" id="rm-' + x.c.id + '"></p></div><button class="small pri" data-acao="rel" data-carga="' + x.c.id + '">Abrir</button></div>'; };
+  return '<section class="card"><h2>Planilha geral</h2><p class="muted">Resumo do mês, movimentos, entregas e contas, tudo atualizado.</p>' + botaoExcel() + "</section>" +
+    '<h2 style="margin-top:8px">Relatórios de viagem</h2><p class="hint">Cada carga entregue vira um relatório no modelo da sua planilha, com os gastos do dia que o app leu dos bancos. Numerados em ordem.</p>' +
+    (meses.length ? meses.map((m, i) => { const doMes = rels.filter(x => x.c.data.slice(0, 7) === m).sort((a, b) => b.r.numero - a.r.numero), liq = doMes.reduce((s, x) => s + RelatorioViagem.calcular(dadosRelatorio(x.c)).liquido, 0);
+      return '<section class="card"><details' + (i === 0 ? " open" : "") + '><summary><b>' + esc(mesLabel(m)) + "</b> · " + doMes.length + " relatório(s) · líquido " + brl0(liq) + "</summary>" + doMes.map(linha).join("") + "</details></section>"; }).join("")
+      : '<p class="muted">Quando uma carga for marcada como Entregue, o relatório aparece aqui.</p>');
 }
 
 function vAgenda() {
@@ -534,7 +575,9 @@ function vLev() {
 
 function vMais() {
   const linhaCat = c => '<div class="row" style="padding:6px 0;border-top:1px solid var(--line)"><span class="grow' + (c.ativo ? "" : " muted") + '">' + esc(c.nome) + "</span><button class=\"small\" data-acao=\"renomear-cat\" data-id=\"" + c.id + '">Renomear</button><button class="small" data-acao="ativar-cat" data-id="' + c.id + '">' + (c.ativo ? "Esconder" : "Mostrar") + "</button></div>";
-  return '<section class="card"><h2>Planilha</h2><p class="muted">Abre no Excel com tudo atualizado: resumo do mês, movimentos, entregas e contas.</p>' + botaoExcel() + "</section>" +
+  return '<h1>Configurações</h1><section class="card"><h2>Aparência</h2><p class="hint">Vale pra você nos dois apps, Financeiro e Tijolos.</p>' + Aparencia.html() + "</section>" +
+    '<section class="card"><h2>Cadastros da Tijolos</h2><p class="hint">Fornecedores, medidas, cidades e frete são editados no app da Tijolos (Configurações). O que mudar lá aparece aqui na hora.</p>' +
+    (D.cadastro ? '<p class="muted">' + D.cadastro.fornecedores.length + " fornecedor(es) · " + D.cadastro.medidas.length + " medidas · " + D.cadastro.cidades.length + " cidades</p>" : "") + "</section>" +
     '<section class="card"><h2>Categorias</h2>' + [["saida", "empresa", "Gastos da empresa"], ["saida", "pessoal", "Gastos pessoais"], ["entrada", null, "Entradas"]].map(([t, e, nome]) => '<h3 style="margin-top:12px">' + nome + "</h3>" + D.cats.filter(c => c.tipo === t && (!e || c.escopo === e)).map(linhaCat).join("")).join("") +
     '<div class="grid2" style="margin-top:12px"><input id="nova-cat" placeholder="Nova categoria"><select id="nova-cat-tipo"><option value="saida|empresa">Gasto da empresa</option><option value="saida|pessoal">Gasto pessoal</option><option value="entrada|empresa">Entrada da empresa</option><option value="entrada|pessoal">Entrada pessoal</option></select></div><div class="btns"><button class="pri" data-acao="criar-cat">Criar categoria</button></div></section>' +
     '<section class="card"><h2>O que o app já aprendeu</h2>' + (D.regras.length ? D.regras.map(r => { const c = catDe(r.categoria_id), p = pessoaDe(r.pessoa_id); return '<div class="row" style="padding:6px 0;border-top:1px solid var(--line)"><span class="grow trunc">' + esc(r.padrao) + ' <span class="muted">→ ' + esc(r.cliente ? "cliente " + r.cliente : p ? p.nome : c ? c.nome : "?") + "</span></span><button class=\"small\" data-acao=\"apagar-regra\" data-id=\"" + r.id + '">Esquecer</button></div>'; }).join("") : '<p class="muted">Ainda nada. Cada resposta sua vira uma regra aqui.</p>') + "</section>" +
@@ -551,12 +594,13 @@ function vLogin() {
 
 function render() {
   const nav = document.getElementById("nav"), syncbtn = document.getElementById("syncbtn");
-  if (!D.perfil) { nav.hidden = true; syncbtn.hidden = true; main.innerHTML = vLogin(); return; }
-  nav.hidden = false; syncbtn.hidden = false; syncbtn.textContent = sincronizando ? "Atualizando…" : "Atualizar";
+  if (!D.perfil) { nav.hidden = true; syncbtn.hidden = true; document.getElementById("cfgbtn").hidden = true; main.innerHTML = vLogin(); return; }
+  nav.hidden = false; syncbtn.hidden = false; document.getElementById("cfgbtn").hidden = false; syncbtn.textContent = sincronizando ? "Atualizando…" : "Atualizar";
   const nPend = D.movs.filter(m => m.pendente && !m.ignorado).length + R.alertas(ctx(), Date.now(), L.desde).length + R.cargasSemAjudante(ctx(), hojeS(), L.desde).length;
   document.getElementById("tabs").innerHTML = TABS.map(([k, t]) => '<button data-tab="' + k + '"' + (L.tab === k ? ' aria-current="page"' : "") + ">" + svg(k) + t + (k === "inicio" && nPend ? '<span class="badge">' + nPend + "</span>" : "") + "</button>").join("");
   const topo = (erro ? '<div class="errmsg" role="alert">' + esc(erro) + "</div>" : "") + (msg ? '<div class="okmsg" role="status">' + esc(msg) + "</div>" : "");
-  main.innerHTML = topo + ({ inicio: vInicio, cargas: vCargas, movs: vMovs, pessoas: vPessoas, semana: vAgenda, mais: vMais, lev: vLev })[L.tab]();
+  main.innerHTML = topo + ({ inicio: vInicio, cargas: vCargas, movs: vMovs, pessoas: vPessoas, semana: vAgenda, planilhas: vPlanilhas, mais: vMais, lev: vLev })[L.tab]();
+  document.getElementById("cfgbtn").setAttribute("aria-pressed", L.tab === "mais");
   if (L.tab === "inicio") mostrarAlertasSePrecisar();
 }
 
@@ -608,13 +652,16 @@ function janelaImportar() {
 }
 
 function janelaPessoa(p) {
-  p = p || { nome: "", tipo: "ajudante", nomes_pix: [], salario_mes: 1700, inicio: hojeS(), ativo: true };
+  p = p || { nome: "", tipo: "ajudante", nomes_pix: [], salario_mes: 1700, inicio: hojeS(), ativo: true, telefone: "", chave_pix: "", valor_carga: 150, obs: "" };
   abrirJanela("<h2>" + (p.id ? "Editar cadastro" : "Cadastrar pessoa") + '</h2><div class="field"><label for="ps-nome">Nome</label><input id="ps-nome" value="' + esc(p.nome) + '"></div>' +
     '<div class="grid2"><div class="field"><label for="ps-tipo">Função</label><select id="ps-tipo"><option value="ajudante"' + (p.tipo === "ajudante" ? " selected" : "") + '>Ajudante</option><option value="vendedor"' + (p.tipo === "vendedor" ? " selected" : "") + '>Vendedor</option></select></div><div class="field"><label for="ps-sal">Salário do mês (vendedor)</label><input id="ps-sal" inputmode="decimal" value="' + (p.salario_mes || 0) + '"></div></div>' +
     '<div class="field"><label for="ps-pix">Nome como aparece no Pix (se for diferente)</label><input id="ps-pix" placeholder="Ex.: MARCOS P SILVA, Marcão" value="' + esc((p.nomes_pix || []).join(", ")) + '"><p class="hint">Separe por vírgula. Serve pra o app reconhecer os Pix que você manda pra essa pessoa.</p></div>' +
-    '<div class="field"><label for="ps-ini">Começou a contar em</label><input type="date" id="ps-ini" value="' + p.inicio + '"></div>' +
-    (p.id ? '<label class="row" style="justify-content:flex-start;margin:10px 0"><input type="checkbox" id="ps-ativo"' + (p.ativo ? " checked" : "") + "> <span>Ativo</span></label>" : "") +
-    '<div class="btns"><button class="pri" data-acao="salvar-pessoa" data-p="' + (p.id || "") + '">Salvar</button><button data-acao="fechar">Cancelar</button></div>');
+    '<div class="grid2"><div class="field"><label for="ps-tel">Telefone</label><input id="ps-tel" inputmode="tel" value="' + esc(p.telefone || "") + '" placeholder="(62) 99999-9999"></div><div class="field"><label for="ps-chave">Chave Pix</label><input id="ps-chave" value="' + esc(p.chave_pix || "") + '"></div></div>' +
+    '<div class="grid2"><div class="field"><label for="ps-vc">Valor por carga (ajudante)</label><input id="ps-vc" inputmode="decimal" value="' + String(p.valor_carga ?? 150).replace(".", ",") + '"></div><div class="field"><label for="ps-ini">Começou a contar em</label><input type="date" id="ps-ini" value="' + p.inicio + '"></div></div>' +
+    '<div class="field"><label for="ps-obs">Observações</label><textarea id="ps-obs" rows="2">' + esc(p.obs || "") + "</textarea></div>" +
+    (p.id ? '<label class="row" style="justify-content:flex-start;margin:10px 0"><input type="checkbox" id="ps-ativo"' + (p.ativo ? " checked" : "") + "> <span>Ativo (desmarque se a pessoa saiu: o histórico fica guardado)</span></label>" : "") +
+    '<div class="btns"><button class="pri" data-acao="salvar-pessoa" data-p="' + (p.id || "") + '">Salvar</button><button data-acao="fechar">Cancelar</button></div>' +
+    (p.id ? '<div class="btns"><button class="danger small" data-acao="apagar-pessoa" data-p="' + p.id + '">Apagar cadastro</button></div><p class="hint" id="ps-msg"></p>' : ""));
 }
 
 function janelaOutraEntrega(m) {
@@ -890,7 +937,7 @@ async function acao(a, ds, alvo) {
     case "prazo-ok": { const [cid, i] = ds.k.split("|"), v = valorDe("pz-" + cid + i); if (!v) return; await situacaoEntrega(cid, +i, "prazo", v); janelaAlertas(); break; }
     case "aj-salvar": case "aj-ninguem": {
       const cid = ds.carga, box = alvo.closest('[id^="aj-"]') || modal;
-      const rows = a === "aj-ninguem" ? [] : [...box.querySelectorAll("[data-aj-p]")].filter(x => x.checked).map(x => ({ carga_id: cid, pessoa_id: x.dataset.ajP, valor: +box.querySelector('[data-aj-v="' + x.dataset.ajP + '"]').value }));
+      const rows = a === "aj-ninguem" ? [] : [...box.querySelectorAll("[data-aj-p]")].filter(x => x.checked).map(x => ({ carga_id: cid, pessoa_id: x.dataset.ajP, valor: parseValor(box.querySelector('[data-aj-v="' + x.dataset.ajP + '"]').value) || 0 }));
       await sb.from("fin_carga_ajudantes").delete().eq("carga_id", cid);
       if (rows.length) await sb.from("fin_carga_ajudantes").insert(rows);
       await sb.from("fin_cargas_info").upsert({ carga_id: cid, ajudantes_ok: true });
@@ -906,13 +953,22 @@ async function acao(a, ds, alvo) {
     }
     case "salvar-pessoa": {
       const nome = valorDe("ps-nome").trim(); if (!nome) { alert("Coloque o nome."); return; }
-      const row = { nome, tipo: valorDe("ps-tipo"), salario_mes: parseValor(valorDe("ps-sal")) || 0, nomes_pix: valorDe("ps-pix").split(",").map(s => s.trim()).filter(Boolean), inicio: valorDe("ps-ini") || hojeS() };
+      const row = { nome, tipo: valorDe("ps-tipo"), salario_mes: parseValor(valorDe("ps-sal")) || 0, nomes_pix: valorDe("ps-pix").split(",").map(s => s.trim()).filter(Boolean), inicio: valorDe("ps-ini") || hojeS(), telefone: valorDe("ps-tel").trim(), chave_pix: valorDe("ps-chave").trim(), valor_carga: parseValor(valorDe("ps-vc")) || 0, obs: valorDe("ps-obs").trim() };
       if (ds.p) row.ativo = document.getElementById("ps-ativo").checked;
       const r = ds.p ? await sb.from("fin_pessoas").update(row).eq("id", ds.p).select().single() : await sb.from("fin_pessoas").insert(row).select().single();
       if (r.error) { erro = "Não deu pra salvar."; break; }
       D.pessoas = D.pessoas.filter(p => p.id !== r.data.id).concat([r.data]).sort((a, b) => a.nome.localeCompare(b.nome));
       await reclassificarPendentes(); fecharJanela(); break;
     }
+    case "apagar-pessoa": {
+      const p = pessoaDe(ds.p), usado = D.ajudantes.some(x => x.pessoa_id === ds.p) || D.movs.some(m => m.pessoa_id === ds.p);
+      if (usado) { const el = document.getElementById("ps-msg"); if (el) el.textContent = p.nome + " já tem cargas ou pagamentos anotados. Pra não perder o histórico, desmarque \"Ativo\" em vez de apagar."; return; }
+      if (alvo.textContent !== "Toque de novo pra apagar") { alvo.textContent = "Toque de novo pra apagar"; return; }
+      const r = await sb.from("fin_pessoas").delete().eq("id", ds.p);
+      if (r.error) { erro = "Não deu pra apagar."; break; }
+      D.pessoas = D.pessoas.filter(x => x.id !== ds.p); L.pessoa = null; fecharJanela(); msg = "Cadastro apagado."; break;
+    }
+    case "rel": abrirRelatorio(ds.carga); return;
     case "criar-cat": {
       const nome = valorDe("nova-cat").trim(); if (!nome) return;
       const [tipo, escopo] = valorDe("nova-cat-tipo").split("|");
@@ -940,6 +996,9 @@ async function desfazerPagamento(cid, i) {
 
 /* ---------- eventos ---------- */
 document.addEventListener("click", e => {
+  const nova = Aparencia.clique(e.target);
+  if (nova) { sb.rpc("salvar_aparencia", { a: nova }).then(() => {}); if (D.perfil) D.perfil.aparencia = nova; render(); return; }
+  if (e.target.closest("#cfgbtn")) { L.tab = L.tab === "mais" ? "inicio" : "mais"; L.pessoa = null; msg = ""; salvarLocal(); render(); window.scrollTo(0, 0); return; }
   const t = e.target.closest("[data-tab]");
   if (t) { L.tab = t.dataset.tab; if (L.tab !== "pessoas") L.pessoa = null; msg = ""; salvarLocal(); render(); window.scrollTo(0, 0); return; }
   const b = e.target.closest("[data-acao]");
@@ -962,12 +1021,30 @@ document.getElementById("syncbtn").addEventListener("click", () => { erro = ""; 
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && D.perfil) { sincronizar(true); pegarCompartilhados(); } });
 if (Avisos && Avisos.addListener) { try { Avisos.addListener("compartilhado", () => pegarCompartilhados()); } catch (e) {} }
 
+/* ---------- sincronia: mudou no Tijolos (ou em outro celular), aparece aqui sozinho ---------- */
+let canal = null, timerRec = null;
+function recarregarLogo() {
+  clearTimeout(timerRec);
+  timerRec = setTimeout(async () => {
+    const a = document.activeElement;
+    if (modal.innerHTML || (a && /INPUT|SELECT|TEXTAREA/.test(a.tagName))) { recarregarLogo(); return; }
+    await carregar(); render();
+  }, 800);
+}
+function ouvirMudancas() {
+  if (canal) sb.removeChannel(canal);
+  canal = sb.channel("financeiro");
+  ["cargas", "carga_admin", "config", "relatorios", "profiles", "fin_entregas", "fin_carga_ajudantes", "fin_pessoas", "fin_cargas_info"].forEach(t => canal.on("postgres_changes", { event: "*", schema: "public", table: t }, recarregarLogo));
+  canal.subscribe();
+}
+
 async function entrar(user) {
   const { data } = await sb.from("profiles").select("*").eq("id", user.id).single();
   if (!data || !data.admin) { await sb.auth.signOut(); erro = "Esse app é só pro administrador."; render(); return; }
   D.perfil = data; erro = "";
   main.innerHTML = '<div class="carregando">Carregando…</div>';
-  await carregar(); render();
+  Aparencia.aplicar(data.aparencia);
+  await carregar(); render(); ouvirMudancas();
   sincronizar(true);
   pegarCompartilhados();
   procurarVersao().then(() => { if (novaVersao) render(); });
