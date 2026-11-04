@@ -71,3 +71,14 @@ if "mlkit-text-recognition" not in g:
 gradle.write_text(g, encoding="utf-8")
 
 print("Android preparado, versão 1.0." + n)
+
+# assinatura FIXA: sem isso o Android recusa a atualização ("App não instalado")
+import re as _re
+_gradle = raiz / "android" / "app" / "build.gradle"
+_g = _gradle.read_text(encoding="utf-8")
+_chave = (raiz / "assinatura" / "financeiro.keystore").as_posix()
+if "signingConfigs.fixa" not in _g:
+    _g = _re.sub(r"android\s*\{", "android {\n    signingConfigs {\n        fixa {\n            storeFile file('" + _chave + "')\n            storePassword 'android'\n            keyAlias 'androiddebugkey'\n            keyPassword 'android'\n        }\n    }\n", _g, count=1)
+    _g = _re.sub(r"buildTypes\s*\{", "buildTypes {\n        debug {\n            signingConfig signingConfigs.fixa\n        }", _g, count=1)
+    _gradle.write_text(_g, encoding="utf-8")
+print("assinatura fixa:", _chave)
