@@ -42,6 +42,9 @@ import com.google.mlkit.vision.text.TextRecognizer;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 import java.util.HashSet;
+import android.graphics.Rect;
+import com.google.mlkit.vision.text.Text;
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 
 /** Ponte entre o app (JavaScript) e o leitor de notificações dos bancos. */
@@ -206,8 +209,12 @@ public class AvisosBancosPlugin extends Plugin {
                 try (Cursor c = cr.query(u, null, null, null, null)) {
                     if (c != null && c.moveToFirst()) { int k = c.getColumnIndex(OpenableColumns.DISPLAY_NAME); if (k >= 0) nome = c.getString(k); }
                 } catch (Exception ignorado) {}
-                if (tipo == null) tipo = nome.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/*";
-                File f = new File(pasta, System.nanoTime() + (tipo.contains("pdf") ? ".pdf" : ".img"));
+                String low = nome.toLowerCase();
+                if (low.endsWith(".pdf")) tipo = "application/pdf";
+                else if (low.endsWith(".csv") || low.endsWith(".ofx") || low.endsWith(".qfx") || low.endsWith(".txt")) tipo = "text/plain";
+                else if (low.matches(".*\\.(jpe?g|png|webp|heic|gif)$")) tipo = "image/*";
+                else if (tipo == null) tipo = "image/*";
+                File f = new File(pasta, System.nanoTime() + (tipo.contains("pdf") ? ".pdf" : tipo.startsWith("image") ? ".img" : ".txt"));
                 try (InputStream in = cr.openInputStream(u); FileOutputStream out = new FileOutputStream(f)) {
                     byte[] buf = new byte[16384]; int n;
                     while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
@@ -227,7 +234,11 @@ public class AvisosBancosPlugin extends Plugin {
             TextRecognizer leitor = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
             for (int k = 0; k < arquivos.size(); k++) {
                 JSObject r = new JSObject(); r.put("nome", nomes.get(k)); r.put("tipo", tipos.get(k));
-                try { r.put("texto", lerArquivo(leitor, arquivos.get(k), tipos.get(k))); }
+                try {
+                    String tp = tipos.get(k);
+                    if (!tp.contains("pdf") && !tp.startsWith("image")) { r.put("texto", lerTexto(arquivos.get(k))); r.put("bruto", true); }
+                    else { StringBuilder linhas = new StringBuilder(); r.put("texto", lerArquivo(leitor, arquivos.get(k), tp, linhas)); r.put("linhas", linhas.toString()); }
+                }
                 catch (Exception e) { String m = String.valueOf(e.getMessage()); r.put("erro", m.toLowerCase().contains("download") ? "O leitor de comprovantes ainda está sendo baixado pelo celular. Tente de novo daqui a pouco." : "Não consegui ler esse arquivo"); }
                 arquivos.get(k).delete();
                 guardar(r);
@@ -240,18 +251,54 @@ public class AvisosBancosPlugin extends Plugin {
 
     private synchronized void guardar(JSObject r) { compartilhados.add(r); }
 
-    private String lerArquivo(TextRecognizer leitor, File f, String tipo) throws Exception {
+    // arquivo de texto (CSV, OFX): UTF-8 ou, se vier quebrado, Latin-1
+    private String lerTexto(File f) throws Exception {
+        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+        try (InputStream in = new java.io.FileInputStream(f)) { byte[] buf = new byte[16384]; int n; while ((n = in.read(buf)) > 0) bo.write(buf, 0, n); }
+        byte[] b = bo.toByteArray();
+        String t = new String(b, StandardCharsets.UTF_8);
+        if (t.contains("\uFFFD")) t = new String(b, StandardCharsets.ISO_8859_1);
+        return t.length() > 2_000_000 ? t.substring(0, 2_000_000) : t;
+    }
+
+    // remonta as linhas da folha: junta o que está na mesma altura, da esquerda pra direita
+    private static void linhasDe(Text t, StringBuilder out) {
+        List<Text.Line> ls = new ArrayList<>();
+        for (Text.TextBlock b : t.getTextBlocks()) for (Text.Line l : b.getLines()) if (l.getBoundingBox() != null) ls.add(l);
+        java.util.Collections.sort(ls, (a, b) -> Integer.compare(a.getBoundingBox().centerY(), b.getBoundingBox().centerY()));
+        List<Text.Line> fila = new ArrayList<>();
+        float cy = 0, h = 0;
+        for (Text.Line l : ls) {
+            Rect r = l.getBoundingBox();
+            if (!fila.isEmpty() && Math.abs(r.centerY() - cy) > Math.max(6f, h * 0.55f)) { juntar(fila, out); fila.clear(); }
+            fila.add(l);
+            float sy = 0, sh = 0;
+            for (Text.Line x : fila) { sy += x.getBoundingBox().centerY(); sh += x.getBoundingBox().height(); }
+            cy = sy / fila.size(); h = sh / fila.size();
+        }
+        juntar(fila, out);
+    }
+    private static void juntar(List<Text.Line> fila, StringBuilder out) {
+        if (fila.isEmpty()) return;
+        java.util.Collections.sort(fila, (a, b) -> Integer.compare(a.getBoundingBox().left, b.getBoundingBox().left));
+        for (int i = 0; i < fila.size(); i++) { if (i > 0) out.append("  "); out.append(fila.get(i).getText()); }
+        out.append("\n");
+    }
+
+    private String lerArquivo(TextRecognizer leitor, File f, String tipo, StringBuilder linhas) throws Exception {
         StringBuilder sb = new StringBuilder();
         if (tipo.contains("pdf")) {
             try (ParcelFileDescriptor pfd = ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY); PdfRenderer pdf = new PdfRenderer(pfd)) {
-                for (int p = 0; p < Math.min(3, pdf.getPageCount()); p++) {
+                for (int p = 0; p < Math.min(15, pdf.getPageCount()); p++) {
                     try (PdfRenderer.Page pg = pdf.openPage(p)) {
                         float escala = Math.min(3f, 2000f / Math.max(pg.getWidth(), pg.getHeight()) * 1.0f);
                         escala = Math.max(escala, 1.5f);
                         Bitmap b = Bitmap.createBitmap((int) (pg.getWidth() * escala), (int) (pg.getHeight() * escala), Bitmap.Config.ARGB_8888);
                         new Canvas(b).drawColor(Color.WHITE);
                         pg.render(b, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
-                        sb.append(Tasks.await(leitor.process(InputImage.fromBitmap(b, 0))).getText()).append("\n");
+                        Text t = Tasks.await(leitor.process(InputImage.fromBitmap(b, 0)));
+                        sb.append(t.getText()).append("\n");
+                        linhasDe(t, linhas);
                         b.recycle();
                     }
                 }
@@ -263,7 +310,9 @@ public class AvisosBancosPlugin extends Plugin {
             o = new BitmapFactory.Options(); o.inSampleSize = amostra;
             Bitmap b = BitmapFactory.decodeFile(f.getPath(), o);
             if (b == null) throw new Exception("imagem");
-            sb.append(Tasks.await(leitor.process(InputImage.fromBitmap(b, 0))).getText());
+            Text t = Tasks.await(leitor.process(InputImage.fromBitmap(b, 0)));
+            sb.append(t.getText());
+            linhasDe(t, linhas);
             b.recycle();
         }
         return sb.toString();
