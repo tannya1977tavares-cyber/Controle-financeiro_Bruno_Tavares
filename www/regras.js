@@ -166,7 +166,8 @@ function classificar(m, ctx) { return m.tipo === "entrada" ? classificarEntrada(
    cada notificação só "absorve" um item do extrato */
 function duplicado(m, ctx, usados) {
   const dia = pd(diaDe(m.quando)).getTime();
-  const x = ctx.movs.find(x => x.origem === "notificacao" && !(usados && usados.has(x.id)) && x.tipo === m.tipo && Math.abs(+x.valor - m.valor) < 0.01
+  // vale pra o que veio por notificação, comprovante, à mão ou outro extrato (PDF x CSV do mesmo mês)
+  const x = ctx.movs.find(x => x.origem !== "levantamento" && !(usados && usados.has(x.id)) && x.tipo === m.tipo && Math.abs(+x.valor - m.valor) < 0.01
     && Math.abs(pd(diaDe(new Date(x.quando).getTime())).getTime() - dia) <= 86400000 * 1.5
     && (!x.contraparte || !m.contraparte || parecidos(x.contraparte, m.contraparte) > 0));
   if (x && usados) usados.add(x.id);

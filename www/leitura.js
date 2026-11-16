@@ -185,6 +185,90 @@ function lerExtrato(txt, nomeArquivo, banco) {
 }
 
 
+/* ---------- extrato em PDF ou print (texto lido linha a linha) ---------- */
+const BANCOS_TEXTO = [[/nubank|nu pagamentos/, "Nubank"], [/itau|ita[uú] unibanco/, "Itaú"], [/bradesco/, "Bradesco"], [/santander/, "Santander"], [/banco do brasil|\bbb\b/, "Banco do Brasil"],
+  [/caixa economica|caixa tem/, "Caixa"], [/banco inter|\binter\b/, "Inter"], [/\bc6\b/, "C6"], [/picpay/, "PicPay"], [/mercado pago/, "Mercado Pago"], [/pagbank|pagseguro/, "PagBank"], [/sicoob/, "Sicoob"], [/sicredi/, "Sicredi"], [/neon/, "Neon"]];
+function bancoDoTexto(t) { const n = norm(t).slice(0, 3000); for (const [re, nome] of BANCOS_TEXTO) if (re.test(n)) return nome; return null; }
+
+const MES_N = { jan: 1, fev: 2, mar: 3, abr: 4, mai: 5, jun: 6, jul: 7, ago: 8, set: 9, out: 10, nov: 11, dez: 12 };
+const RE_DIN_EXT = /(^|\s)([-+−–]?\s?(?:R\$\s?)?[-−–]?\s?\d{1,3}(?:\.\d{3})*,\d{2})(\s?[DC])?(?=\s|$)/g;
+const RE_SALDO = /\b(saldo|total de entradas|total de saidas|total de sa[ií]das|total do dia|totais|limite|rendimento liquido|valores em r\$|extrato|periodo|p[aá]gina|agencia|ag[eê]ncia|conta corrente|cpf|cnpj|lancamentos futuros)\b/i;
+const RE_DESC_SAIDA = /\b(enviad[oa]|pagamento|pagto|pgto|pag |compra|debito|d[eé]bito|saque|tarifa|transferencia enviada|pix enviado|pix transf|ted enviada|doc enviado|boleto|aplicacao|aplica[cç][aã]o|iof|juros|anuidade)\b/i;
+const RE_DESC_ENTRADA = /\b(recebid[oa]|recebimento|deposito|dep[oó]sito|credito|cr[eé]dito|estorno|reembolso|devolu\w*|transferencia recebida|pix recebido|ted recebida|resgate|rendimento|salario)\b/i;
+const TIPOS_DESC = /^(transfer[eê]ncia|transf|pix|ted|doc|pagamento|pagto|pgto|pag|compra|compras|d[eé]bito|debito|cr[eé]dito|credito|recebid[oa]|recebimento|enviad[oa]|realizad[oa]|no|na|do|da|de|pelo|pela|via|cart[aã]o|boleto|qr ?code|em|conta|para|automatico|aut|int|sispag|deb|cred|rem|des|dest|bco|ag|cc|tit|titulo|de\s+boleto)\b[\s.:\-]*/i;
+function nomeDoExtrato(desc) {
+  let d = String(desc || "").replace(/\d{2}\/\d{2}(\/\d{2,4})?/g, " ").replace(/\b\d{1,2}:\d{2}(:\d{2})?\b/g, " ").replace(/\s+/g, " ").trim(), antes;
+  do { antes = d; d = d.replace(TIPOS_DESC, "").trim(); } while (d !== antes && d);
+  d = d.replace(/^[\-–:]\s*/, "").replace(/\b\d{2}\/\d{2}\b/g, "").replace(/[•*]{2,}.*$/, "").replace(/\s+\d{3,}[\d.\-\/]*\s*$/, "");
+  return limparNome(d) || limparNome(desc);
+}
+function dataLinha(t, anoPadrao) {
+  let m = t.match(/^(\d{2})\/(\d{2})(?:\/(\d{2,4}))?(?=\s|$)/);
+  if (m) { const a = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : anoPadrao; return { y: a, mo: +m[2], d: +m[1], semAno: !m[3], resto: t.slice(m[0].length).trim() }; }
+  m = t.match(/^(\d{1,2})\s(?:de\s)?([a-zç]{3})[a-zç]*\.?(?:\s(?:de\s)?(\d{4}))?(?=\s|$)/i);
+  if (m && MES_N[norm(m[2]).slice(0, 3)]) return { y: m[3] ? +m[3] : anoPadrao, mo: MES_N[norm(m[2]).slice(0, 3)], d: +m[1], semAno: !m[3], resto: t.slice(m[0].length).trim() };
+  m = t.match(/^(\d{4})-(\d{2})-(\d{2})(?=\s|$)/);
+  if (m) return { y: +m[1], mo: +m[2], d: +m[3], semAno: false, resto: t.slice(m[0].length).trim() };
+  return null;
+}
+/* texto de um extrato (PDF ou print) -> [{tipo, valor, contraparte, texto, quando, chave}]
+   aceita as linhas já montadas (uma por linha da folha) ou o texto solto do leitor */
+function lerExtratoTexto(texto, banco, agoraMs) {
+  const agora = agoraMs || Date.now();
+  const linhas = String(texto || "").replace(/\r/g, "").split("\n").map(s => s.replace(/[ \t]+/g, " ").trim()).filter(Boolean);
+  banco = banco || bancoDoTexto(texto) || "Banco";
+  const anos = (String(texto).match(/\b20\d{2}\b/g) || []).map(Number).filter(a => a <= new Date(agora).getFullYear() + 1);
+  const anoPadrao = anos.length ? Math.max(...anos) : new Date(agora).getFullYear();
+  const out = [], vistos = {};
+  let dia = null, secao = null, ultimo = null, ultIdx = -9, pend = "";
+  linhas.forEach((l0, i) => {
+    let l = l0.replace(/[−–]/g, "-");
+    const dt = dataLinha(l, anoPadrao);
+    if (dt) {
+      let q = new Date(dt.y, dt.mo - 1, dt.d, 12, 0, 0).getTime();
+      if (dt.semAno && q > agora + 3 * 864e5) q = new Date(dt.y - 1, dt.mo - 1, dt.d, 12, 0, 0).getTime();
+      if (isFinite(q) && dt.mo >= 1 && dt.mo <= 12 && dt.d >= 1 && dt.d <= 31) { dia = q; l = dt.resto; }
+    }
+    const n = norm(l);
+    if (/total de entradas|^entradas\b/.test(n)) { secao = "entrada"; return; }
+    if (/total de saidas|^saidas\b/.test(n)) { secao = "saida"; return; }
+    if (!l) return;
+    const vals = [...l.matchAll(RE_DIN_EXT)];
+    if (!vals.length) {
+      // linha só com texto: completa o lançamento de cima (nome de quem recebeu) ou o de baixo
+      if (/^\d+$/.test(n) || /^(saldo|total|periodo|extrato|data|pagina)\b/.test(n)) return;
+      if (ultimo && ultIdx === i - 1 && !ultimo.completo) { ultimo.texto += " - " + l; ultimo.contraparte = nomeDoExtrato(ultimo.texto.split(" - ").slice(1).join(" - ")) || ultimo.contraparte; ultimo.completo = true; }
+      else if (!RE_SALDO.test(n)) pend = l;
+      return;
+    }
+    if (RE_SALDO.test(n) || !dia) { pend = ""; return; }
+    const v = vals[0], bruto = v[2].replace(/\s/g, ""), suf = (v[3] || "").trim();
+    const valor = Math.abs(numero(bruto.replace(/R\$/i, "").replace(/^[-+]/, "")));
+    if (!isFinite(valor) || valor === 0) return;
+    let desc = l.replace(RE_DIN_EXT, " ").replace(/\s+/g, " ").trim();
+    if (!desc && pend) desc = pend;
+    pend = "";
+    if (!desc) return;
+    let tipo = null;
+    if (/^-/.test(bruto) || suf === "D") tipo = "saida";
+    else if (/^\+/.test(bruto) || suf === "C") tipo = "entrada";
+    else if (RE_DESC_ENTRADA.test(norm(desc)) && !RE_DESC_SAIDA.test(norm(desc).replace(/transferencia recebida|pix recebido/, ""))) tipo = "entrada";
+    else if (RE_DESC_SAIDA.test(norm(desc))) tipo = "saida";
+    else tipo = secao;
+    if (!tipo) return;
+    const partes = desc.split(/\s+-\s+/);
+    const base = [banco, tipo, R2(valor), new Date(dia).toISOString().slice(0, 10), norm(desc).slice(0, 40)].join("|");
+    vistos[base] = (vistos[base] || 0) + 1;
+    ultimo = { banco, tipo, valor: R2(valor), contraparte: partes.length > 1 ? nomeDoExtrato(partes.slice(1).join(" - ")) : nomeDoExtrato(desc), texto: desc, quando: dia, chave: "txt|" + base + "|" + vistos[base], completo: partes.length > 1 };
+    ultIdx = i;
+    out.push(ultimo);
+  });
+  out.forEach(x => delete x.completo);
+  return out;
+}
+const R2 = v => Math.round(v * 100) / 100;
+
+
 /* ---------- comprovantes (texto lido da foto/PDF) ---------- */
 const MESES = { jan: 1, fev: 2, mar: 3, abr: 4, mai: 5, jun: 6, jul: 7, ago: 8, set: 9, out: 10, nov: 11, dez: 12 };
 const ROT_DESTINO = /^(destino|destinat[aá]rio|para|recebedor|favorecido|benefici[aá]rio|quem recebeu|nome do recebedor|dados do recebedor|creditado|conta de destino)\b/i;
@@ -255,6 +339,6 @@ function lerComprovante(texto, quandoPadrao, donos) {
   return { tipo, valor: Math.round(valor * 100) / 100, quando, contraparte, banco, boleto, aPagar: boleto && !pago, vencimento, texto: t.slice(0, 2000) };
 }
 
-const api = { lerComprovante, dataComprovante, vencimentoDe, BANCOS, nomeBanco, lerAviso, lerExtrato, norm, numero };
+const api = { lerExtratoTexto, bancoDoTexto, nomeDoExtrato, lerComprovante, dataComprovante, vencimentoDe, BANCOS, nomeBanco, lerAviso, lerExtrato, norm, numero };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Leitura = api;
 })(typeof window !== "undefined" ? window : globalThis);

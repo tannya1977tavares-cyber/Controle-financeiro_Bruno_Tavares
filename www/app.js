@@ -152,7 +152,7 @@ async function pegarCompartilhados() {
     const r = await Avisos.pegarCompartilhado();
     lendoComp = !!r.lendo;
     (r.itens || []).forEach(it => filaComp.push(it));
-    if (lendoComp && !filaComp.length) { msg = "Lendo o comprovante…"; render(); }
+    if (lendoComp && !filaComp.length) { msg = "Lendo o arquivo…"; render(); }
     if (!modal.innerHTML && filaComp.length) janelaComprovante(filaComp.shift());
   } catch (e) {}
 }
@@ -160,8 +160,45 @@ function donos() { const n = (D.perfil && D.perfil.nome) || ""; return ["tavares
 function parecidoJaAnotado(c) {
   return D.movs.find(m => !m.ignorado && m.tipo === c.tipo && Math.abs(+m.valor - c.valor) < 0.01 && Math.abs(msDe(m.quando) - c.quando) < 2 * 864e5);
 }
-let compAtual = null;
+let compAtual = null, extAtual = null;
+/* extrato (PDF, print, CSV ou OFX) que chegou pelo Compartilhar: muitas linhas de uma vez */
+function extratoDe(it) {
+  if (!it.texto) return null;
+  const banco = LE.bancoDoTexto(it.texto);
+  let itens = it.bruto ? LE.lerExtrato(it.texto, it.nome || "", banco || "Nubank") : [];
+  if (!itens.length) itens = LE.lerExtratoTexto(it.linhas || it.texto, banco, Date.now());
+  if (!itens.length && it.linhas) itens = LE.lerExtratoTexto(it.texto, banco, Date.now());
+  return itens.length >= 3 || (it.bruto && itens.length) ? { itens, banco: banco || itens[0].banco } : null;
+}
+function rotuloPrevisto(x, k) {
+  if (k.ignorado) return "Pagamento da fatura (não conta de novo)";
+  if (k.pessoa_id) return "Equipe · " + ((pessoaDe(k.pessoa_id) || {}).nome || "");
+  if (x.tipo === "entrada" && k.carga_id) return "Cliente · " + nomeEntrega(cargaDe(k.carga_id), k.entrega_idx);
+  const c = catDe(k.categoria_id);
+  return c ? c.nome + (c.escopo === "pessoal" ? " (pessoal)" : "") : null;
+}
+function janelaExtrato(ex) {
+  const usados = new Set(), chaves = new Set(D.movs.map(x => x.chave)), c = ctx(), novos = [], ja = [];
+  ex.itens.forEach(x => (chaves.has(x.chave) || R.duplicado(x, c, usados) ? ja : novos).push(x));
+  novos.sort((a, b) => a.quando - b.quando);
+  extAtual = { novos, ja, banco: ex.banco };
+  const dias = ex.itens.map(x => R.diaDe(x.quando)).sort(), soma = (l, t) => l.filter(x => x.tipo === t).reduce((s, x) => s + x.valor, 0);
+  const prev = novos.map(x => { const k = R.classificar(Object.assign({ origem: "extrato" }, x), c); return { x, rot: rotuloPrevisto(x, k) }; });
+  const nPerg = prev.filter(p => !p.rot).length;
+  const bancos = [...new Set(Object.values(LE.BANCOS))];
+  if (ex.banco && !bancos.includes(ex.banco)) bancos.unshift(ex.banco);
+  abrirJanela("<h2>Extrato lido</h2><p class=\"muted\">" + ex.itens.length + " lançamentos de " + diaCurto(dias[0]) + " a " + diaCurto(dias[dias.length - 1]) + "</p>" +
+    '<div class="field"><label for="ext-banco">Banco</label><select id="ext-banco">' + bancos.map(b => "<option" + (b === ex.banco ? " selected" : "") + ">" + esc(b) + "</option>").join("") + "</select></div>" +
+    '<section class="card"><div class="row"><b>' + novos.length + ' novos</b><span class="muted">' + ja.length + " já estavam anotados</span></div>" +
+    (novos.length ? '<div class="row"><span class="pos">Entradas ' + brl(soma(novos, "entrada")) + '</span><span class="neg">Saídas ' + brl(soma(novos, "saida")) + "</span></div>" +
+      '<p class="hint">' + (novos.length - nPerg) + " já sei separar sozinho" + (nPerg ? " · " + nPerg + " vou te perguntar no Início" : "") + "</p>" : "") + "</section>" +
+    (novos.length ? '<div style="max-height:46vh;overflow:auto">' + prev.map(({ x, rot }) => '<div class="mv"><div class="grow"><div class="trunc"><b>' + esc(x.contraparte || x.texto || "Sem nome") + '</b></div><div class="muted trunc">' + diaCurto(R.diaDe(x.quando)) + " · " + (rot ? esc(rot) : '<span class="chip red">Perguntar</span>') + '</div></div><div class="v ' + (x.tipo === "entrada" ? "pos" : "neg") + '">' + (x.tipo === "entrada" ? "+" : "−") + brl(x.valor) + "</div></div>").join("") + "</div>" +
+      '<div class="btns"><button class="pri" data-acao="ext-lancar">Lançar ' + (novos.length === 1 ? "o novo" : "os " + novos.length + " novos") + '</button><button data-acao="comp-prox">Cancelar</button></div>'
+      : '<p>Tudo desse extrato já estava no app. Nada pra lançar.</p><div class="btns"><button class="pri" data-acao="comp-prox">Fechar</button></div>'));
+}
 function janelaComprovante(it) {
+  const ex = extratoDe(it);
+  if (ex) { janelaExtrato(ex); return; }
   if (it.erro || !it.texto) { abrirJanela('<h2>Comprovante</h2><div class="errmsg">' + esc(it.erro || "Não achei texto nesse arquivo.") + '</div><p class="muted">Se quiser, lance à mão.</p><div class="btns"><button class="pri" data-acao="comp-manual">Lançar à mão</button><button data-acao="comp-prox">Fechar</button></div>'); return; }
   const c = LE.lerComprovante(it.texto, Date.now(), donos());
   if (!c) { abrirJanela('<h2>Comprovante</h2><p>Não achei o valor nesse comprovante.</p><details class="card"><summary>Ver o texto que li</summary><pre style="white-space:pre-wrap;font-size:13px">' + esc(it.texto.slice(0, 1500)) + '</pre></details><div class="btns"><button class="pri" data-acao="comp-manual">Lançar à mão</button><button data-acao="comp-prox">Fechar</button></div>'); return; }
@@ -284,7 +321,7 @@ const navMes = (acao) => '<div class="nav"><button class="small" data-acao="' + 
 
 function linhaMovHtml(m) {
   const c = catDe(m.categoria_id), p = pessoaDe(m.pessoa_id), k = cargaDe(m.carga_id);
-  const det = [m.pendente ? '<span class="chip red">Perguntar</span>' : c ? esc(c.nome) : "", p ? esc(p.nome) : "", k ? "Carga " + diaCurto(k.data) + (m.tipo === "entrada" && m.entrega_idx != null ? " · " + esc(nomeEntrega(k, m.entrega_idx)) : "") : "", esc(m.banco)].filter(Boolean).join(" · ");
+  const det = [m.pendente ? '<span class="chip red">Perguntar</span>' : c ? esc(c.nome) : "", m.obs ? esc(m.obs) : "", p ? esc(p.nome) : "", k ? "Carga " + diaCurto(k.data) + (m.tipo === "entrada" && m.entrega_idx != null ? " · " + esc(nomeEntrega(k, m.entrega_idx)) : "") : "", esc(m.banco)].filter(Boolean).join(" · ");
   return '<div class="mv" data-acao="editar" data-id="' + m.id + '"><div class="grow"><div class="trunc"><b>' + esc(m.contraparte || (m.tipo === "entrada" ? "Entrada" : "Saída")) + "</b></div><div class=\"muted trunc\">" + horaMov(m) + " · " + det + " " + chipEscopo(m) + '</div></div><div class="v ' + (m.ignorado ? "muted" : m.tipo === "entrada" ? "pos" : "neg") + '">' + (m.tipo === "entrada" ? "+" : "−") + brl(m.valor) + "</div></div>";
 }
 
@@ -404,7 +441,7 @@ function vMovs() {
 function vPessoas() {
   if (L.pessoa) return vFicha(pessoaDe(L.pessoa));
   const ate = hojeS(), de = L.mes + "-01";
-  return '<div class="btns"><button class="pri" data-acao="nova-pessoa">+ Cadastrar pessoa</button></div>' +
+  return '<div class="btns"><button class="pri" data-acao="nova-pessoa">+ Cadastrar pessoa</button><button data-acao="abrir-excel" data-q="descarga">' + (gerandoExcel === "descarga" ? "Montando…" : "Controle de Descarga no Excel") + "</button></div>" +
     ["vendedor", "ajudante"].map(t => {
       const ps = D.pessoas.filter(p => p.tipo === t);
       return '<h2 style="margin-top:16px">' + (t === "vendedor" ? "Vendedores" : "Ajudantes") + "</h2>" + (ps.length ? ps.map(p => {
@@ -418,7 +455,7 @@ function vFicha(p) {
   if (!p) { L.pessoa = null; return vPessoas(); }
   const de = L.mes + "-01", ate = fimMes(L.mes) < hojeS() ? fimMes(L.mes) : hojeS();
   const f = R.ficha(ctx(), p, de, ate), hoje = hojeS(), faltouHoje = D.faltas.some(x => x.pessoa_id === p.id && x.dia === hoje);
-  return '<div class="btns"><button class="small" data-acao="voltar-pessoas">‹ Pessoas</button><button class="small" data-acao="editar-pessoa" data-p="' + p.id + '">Editar cadastro</button></div>' +
+  return '<div class="btns"><button class="small" data-acao="voltar-pessoas">‹ Pessoas</button><button class="small" data-acao="editar-pessoa" data-p="' + p.id + '">Editar cadastro</button><button class="small pri" data-acao="abrir-excel" data-q="pessoa" data-p="' + p.id + '">' + (gerandoExcel === "pessoa" ? "Montando…" : "Controle no Excel") + "</button></div>" +
     "<h1 style=\"margin-top:12px\">" + esc(p.nome) + '</h1><p class="muted">' + (p.tipo === "vendedor" ? "Vendedor · " + brl0(p.salario_mes) + " por mês (" + brl(p.salario_mes / 20) + " por dia)" : "Ajudante") + "</p>" +
     '<section class="card ' + (f.saldo > 0 ? "warn" : "") + '"><div class="row"><b>Saldo geral</b><b style="font-size:20px">' + (f.saldo > 0 ? "Você deve " + brl(f.saldo) : f.saldo < 0 ? "Adiantou " + brl(-f.saldo) : "Em dia") + "</b></div></section>" +
     (p.tipo === "vendedor" ? '<div class="btns"><button class="' + (faltouHoje ? "" : "danger") + '" data-acao="falta" data-p="' + p.id + '" data-dia="' + hoje + '">' + (faltouHoje ? "Desfazer: não atendeu hoje" : "Não atendeu hoje") + "</button></div>" : "") +
@@ -434,25 +471,28 @@ function vFicha(p) {
 const CORES = { ent: "var(--ok)", carga: "#C2562F", gcarga: "var(--emp)", gemp: "#14858A", gpes: "var(--pes)", conta: "var(--warn)", vencida: "var(--danger)" };
 const LEG = [["ent", "Entrou dinheiro"], ["carga", "Entrega da Tijolos"], ["gcarga", "Gasto das entregas"], ["gemp", "Outro gasto da empresa"], ["gpes", "Gasto pessoal"], ["conta", "Conta a pagar"]];
 
-function botaoExcel() { return '<div class="btns"><button class="pri" data-acao="abrir-excel">' + (gerandoExcel ? "Montando a planilha…" : "Abrir no Excel") + "</button></div>"; }
+function botaoExcel(qual, extra) { qual = qual || "geral"; return '<div class="btns"><button class="pri" data-acao="abrir-excel" data-q="' + qual + '"' + (extra || "") + ">" + (gerandoExcel === qual ? "Montando a planilha…" : "Abrir no Excel") + "</button></div>"; }
 
-let gerandoExcel = false;
-async function abrirExcel() {
+let gerandoExcel = null;
+const ctxPlan = () => Object.assign(ctx(), { pessoas: D.pessoas });
+// monta a planilha no celular com os dados do app e abre no Excel
+async function abrirExcel(qual, ds) {
   if (gerandoExcel) return;
-  gerandoExcel = true; render();
+  gerandoExcel = qual; render();
   try {
-    const abas = [];
-    for (const [nome, aba, colunas] of Excel.ABAS_FIN) {
-      const { data, error } = await sb.rpc("planilha_dados", { t: null, aba });
-      if (error) throw error;
-      abas.push({ nome, colunas, linhas: data || [] });
-    }
-    const b64 = Excel.base64(Excel.xlsx(abas)), nome = "Financeiro Tavares " + hojeS() + ".xlsx", tipo = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    if (NATIVO) await Avisos.abrirArquivo({ nome, base64: b64, tipo });
-    else { const a = document.createElement("a"); a.href = "data:" + tipo + ";base64," + b64; a.download = nome; a.click(); }
+    const c = ctxPlan(), hoje = hojeS(), ano = (ds && ds.ano) || hoje.slice(0, 4);
+    let abas, nome;
+    if (qual === "descarga") { abas = Planilhas.descargaEquipe(c, L.mes, hoje); nome = "Controle de Descarga " + L.mes; }
+    else if (qual === "pessoa") { const p = pessoaDe(ds.p); abas = Planilhas.descargaPessoa(c, p, hoje); nome = "Controle de Descarga " + p.nome; }
+    else if (qual === "manut") { abas = Planilhas.manutencoes(c, hoje, ano); nome = "Controle de Manutenções " + ano; }
+    else if (qual === "gastos") { abas = Planilhas.gastos(c, hoje, ano); nome = "Controle de Gastos Bruno Tavares " + ano; }
+    else { abas = Planilhas.geral(c, hoje, L.mes); nome = "Financeiro Tavares " + hoje; }
+    const b64 = Excel.base64(Excel.livro(abas)), arq = nome.replace(/[\\/:*?"<>|]/g, "-") + ".xlsx", tipo = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    if (NATIVO) await Avisos.abrirArquivo({ nome: arq, base64: b64, tipo });
+    else { const a = document.createElement("a"); a.href = "data:" + tipo + ";base64," + b64; a.download = arq; a.click(); }
     msg = "Planilha aberta com os dados de agora.";
-  } catch (e) { erro = "Não consegui montar a planilha. Confira a internet e tente de novo."; }
-  gerandoExcel = false;
+  } catch (e) { console.error(e); erro = "Não consegui montar a planilha. Tente de novo."; }
+  gerandoExcel = null;
 }
 
 /* ---------- Excel: planilha geral e relatórios de viagem por mês ---------- */
@@ -480,7 +520,12 @@ function vPlanilhas() {
   const rels = D.rels.map(r => ({ r, c: cargaDe(r.carga_id) })).filter(x => x.c), meses = [...new Set(rels.map(x => x.c.data.slice(0, 7)))].sort().reverse();
   const linha = x => { const d = dadosRelatorio(x.c), t = RelatorioViagem.calcular(d);
     return '<div class="row rel"><div class="grow" style="min-width:0"><b>Nº ' + numRel(x.r) + " · " + diaCurto(x.c.data) + '</b><div class="muted trunc">' + esc(d.rota.join(" → ")) + " · " + esc(x.c.vendedor || "") + '</div><div class="hint">Bruto ' + brl0(t.bruto) + " · despesas " + brl0(t.despesas) + ' · <b class="' + (t.liquido >= 0 ? "pos" : "neg") + '">líquido ' + brl0(t.liquido) + '</b></div><p class="hint" id="rm-' + x.c.id + '"></p></div><button class="small pri" data-acao="rel" data-carga="' + x.c.id + '">Abrir</button></div>'; };
-  return '<section class="card"><h2>Planilha geral</h2><p class="muted">Resumo do mês, movimentos, entregas e contas, tudo atualizado.</p>' + botaoExcel() + "</section>" +
+  const ano = L.mes.slice(0, 4), cartao = (t, txt, q) => '<section class="card"><h2>' + t + '</h2><p class="muted">' + txt + "</p>" + botaoExcel(q, ' data-ano="' + ano + '"') + "</section>";
+  return '<p class="hint">As planilhas são montadas na hora, com tudo que o app já anotou. O mês escolhido aqui vale pro Painel e pro Controle de Descarga.</p>' + navMes("mes") +
+    cartao("Planilha geral", "Painel com os indicadores de " + esc(mesLabel(L.mes).toLowerCase()) + ", resumo de cada mês, movimentos, entregas (com lucro e margem) e contas.", "geral") +
+    cartao("Controle de Descarga", "Uma aba por ajudante e vendedor: descarga ou diária, vales pagos e o saldo de cada um no mês. Na ficha da pessoa tem o histórico mês a mês.", "descarga") +
+    cartao("Controle de Manutenções " + ano, "Tudo que caiu em manutenção (caminhão e máquina), mês a mês, separando oficina e loja de peças.", "manut") +
+    cartao("Controle de Gastos " + ano, "Janeiro a dezembro no modelo da sua planilha, com receitas, despesas fixas, variáveis, extras, adicionais e saldo.", "gastos") +
     '<h2 style="margin-top:8px">Relatórios de viagem</h2><p class="hint">Cada carga entregue vira um relatório no modelo da sua planilha, com os gastos do dia que o app leu dos bancos. Numerados em ordem.</p>' +
     (meses.length ? meses.map((m, i) => { const doMes = rels.filter(x => x.c.data.slice(0, 7) === m).sort((a, b) => b.r.numero - a.r.numero), liq = doMes.reduce((s, x) => s + RelatorioViagem.calcular(dadosRelatorio(x.c)).liquido, 0);
       return '<section class="card"><details' + (i === 0 ? " open" : "") + '><summary><b>' + esc(mesLabel(m)) + "</b> · " + doMes.length + " relatório(s) · líquido " + brl0(liq) + "</summary>" + doMes.map(linha).join("") + "</details></section>"; }).join("")
@@ -635,6 +680,7 @@ function janelaEditar(m) {
     (m.tipo === "saida" ? '<div class="field"><label for="ed-carga">Carga</label><select id="ed-carga"><option value="">Nenhuma</option>' + cs.map(c => '<option value="' + c.id + '"' + (c.id === m.carga_id ? " selected" : "") + ">" + diaCurto(c.data) + " · " + esc(c.entregas.map(e => e.cliente || "Sem nome").join(", ")) + "</option>").join("") + "</select></div>" +
       '<div class="field"><label for="ed-forn">Se for compra de tijolo, de qual cerâmica?</label><select id="ed-forn">' + Object.entries(R.FORNECEDORES).map(([k, n]) => '<option value="' + k + '"' + ((m.fornecedor || R.fornecedorDoNome(m.contraparte)) === k ? " selected" : "") + ">" + esc(n) + "</option>").join("") + "</select></div>" +
       '<div class="field"><label for="ed-pessoa">Pagamento pra</label><select id="ed-pessoa"><option value="">Ninguém da equipe</option>' + D.pessoas.map(p => '<option value="' + p.id + '"' + (p.id === m.pessoa_id ? " selected" : "") + ">" + esc(p.nome) + "</option>").join("") + "</select></div>" : "") +
+    '<div class="field"><label for="ed-obs">Observação</label><input id="ed-obs" value="' + esc(m.obs || "") + '" placeholder="' + (m.tipo === "saida" ? "Ex.: troca de embreagem, kit de freio" : "Ex.: frete de retorno") + '"></div>' +
     (m.contraparte ? '<label class="row" style="justify-content:flex-start;margin:10px 0"><input type="checkbox" id="ed-lembrar" checked> <span>Lembrar pra próximas de "' + esc(m.contraparte) + '"</span></label>' : "") +
     '<label class="row" style="justify-content:flex-start;margin:10px 0"><input type="checkbox" id="ed-ign"' + (m.ignorado ? " checked" : "") + "> <span>Não contar esse movimento</span></label>" +
     '<div class="btns"><button class="pri" data-acao="salvar-mov" data-id="' + m.id + '">Salvar</button><button data-acao="fechar">Cancelar</button>' + (m.origem === "manual" ? '<button class="danger" data-acao="apagar-mov" data-id="' + m.id + '">Apagar</button>' : "") + "</div>");
@@ -648,7 +694,7 @@ function janelaNovoMov() {
 }
 
 function janelaImportar() {
-  abrirJanela('<h2>Importar extrato</h2><p class="muted">No app do banco, exporte o extrato do mês em CSV ou OFX e escolha o arquivo aqui. O que já veio pelas notificações não é contado de novo.</p><div class="field"><label for="imp-banco">Banco</label><select id="imp-banco">' + [...new Set(Object.values(LE.BANCOS))].map(b => "<option>" + esc(b) + "</option>").join("") + '</select></div><div class="field"><label for="imp-arq">Arquivo</label><input type="file" id="imp-arq" accept=".csv,.ofx,.txt,text/csv"></div><div id="imp-msg"></div><div class="btns"><button class="pri" data-acao="importar-ok">Importar</button><button data-acao="fechar">Fechar</button></div>');
+  abrirJanela('<h2>Importar extrato</h2><p class="muted">Mais fácil: no app do banco, abra o extrato (PDF, CSV ou OFX) e toque em <b>Compartilhar → Financeiro Tavares</b>. Ou escolha aqui um arquivo CSV ou OFX. O que já está no app não é contado de novo.</p><div class="field"><label for="imp-banco">Banco</label><select id="imp-banco">' + [...new Set(Object.values(LE.BANCOS))].map(b => "<option>" + esc(b) + "</option>").join("") + '</select></div><div class="field"><label for="imp-arq">Arquivo</label><input type="file" id="imp-arq" accept=".csv,.ofx,.txt,text/csv"></div><div id="imp-msg"></div><div class="btns"><button class="pri" data-acao="importar-ok">Importar</button><button data-acao="fechar">Fechar</button></div>');
 }
 
 function janelaPessoa(p) {
@@ -780,7 +826,7 @@ async function acao(a, ds, alvo) {
     case "salvar-mov": {
       if (!m) return;
       const cat = catDe(valorDe("ed-cat")), ign = document.getElementById("ed-ign").checked, lembrar = document.getElementById("ed-lembrar") && document.getElementById("ed-lembrar").checked;
-      const up = { categoria_id: cat ? cat.id : null, escopo: cat ? cat.escopo : null, ignorado: ign, pendente: !cat && !ign };
+      const up = { categoria_id: cat ? cat.id : null, escopo: cat ? cat.escopo : null, ignorado: ign, pendente: !cat && !ign, obs: valorDe("ed-obs").trim() || null };
       const antes = m.carga_id && m.entrega_idx != null ? [m.carga_id, m.entrega_idx] : null;
       if (m.tipo === "saida") { up.carga_id = valorDe("ed-carga") || null; up.pessoa_id = valorDe("ed-pessoa") || null; if (up.pessoa_id) up.escopo = "empresa"; up.fornecedor = cat && cat.nome.startsWith("Compra de tijolo") ? valorDe("ed-forn") : null; }
       else { const v = valorDe("ed-ent"); if (v) { const [cid, i] = v.split("|"); up.carga_id = cid; up.entrega_idx = +i; } else { up.carga_id = null; up.entrega_idx = null; } }
@@ -805,11 +851,17 @@ async function acao(a, ds, alvo) {
       const txt = await el.files[0].text(), banco = valorDe("imp-banco");
       const itens = LE.lerExtrato(txt, el.files[0].name, banco);
       if (!itens.length) { out.innerHTML = '<div class="errmsg">Não reconheci esse arquivo. Use o CSV ou OFX que o banco exporta.</div>'; return; }
-      const usados = new Set(), chaves = new Set(D.movs.map(x => x.chave));
-      const novos = itens.filter(x => !chaves.has(x.chave) && !R.duplicado(x, ctx(), usados)).map(x => Object.assign(x, { origem: "extrato", banco }));
-      out.innerHTML = '<p class="muted">Importando…</p>';
-      const r = await inserirMovs(novos);
-      out.innerHTML = r.ok ? '<div class="okmsg">' + r.n + " movimento(s) novos. " + (itens.length - novos.length) + " já estavam no app.</div>" : '<div class="errmsg">Não deu pra importar. Confira a internet.</div>';
+      janelaExtrato({ itens, banco }); return;
+    }
+    case "ext-lancar": {
+      if (!extAtual || !extAtual.novos.length) return;
+      const banco = valorDe("ext-banco") || extAtual.banco, lista = extAtual.novos.map(x => Object.assign({}, x, { origem: "extrato", banco }));
+      alvo.disabled = true; alvo.textContent = "Lançando…";
+      const r = await inserirMovs(lista);
+      if (!r.ok) { alvo.disabled = false; alvo.textContent = "Tentar de novo"; erro = "Não deu pra lançar. Confira a internet."; render(); return; }
+      const ch = new Set(lista.map(x => x.chave)), feitos = D.movs.filter(m => ch.has(m.chave)), perg = feitos.filter(m => m.pendente && !m.ignorado).length;
+      extAtual = null;
+      abrirJanela("<h2>Pronto!</h2><p>" + feitos.length + " lançamento(s) do extrato anotados.</p><p>" + (feitos.length - perg) + " já foram separados sozinhos (quem é quem, gasto com o quê, receita de quê)." + (perg ? " <b>" + perg + " precisam de você</b> no Início: cada resposta vira regra pras próximas vezes." : "") + '</p><div class="btns"><button class="pri" data-acao="comp-prox">Ok</button></div>');
       render(); return;
     }
     case "vista-agenda": L.vistaAgenda = ds.v; salvarLocal(); break;
@@ -877,7 +929,7 @@ async function acao(a, ds, alvo) {
       if (r.error) erro = "Não deu pra salvar a conta."; else { msg = "Boleto guardado em Contas."; await carregar(); await agendarLembretes(); }
       proximoComprovante(); break;
     }
-    case "abrir-excel": await abrirExcel(); break;
+    case "abrir-excel": await abrirExcel(ds.q || "geral", ds); break;
     case "procurar-versao": await procurarVersao(); msg = novaVersao ? "Tem versão nova! Veja no Início." : "Você já está na versão mais nova."; break;
     case "lev-abrir": L.tab = "lev"; salvarLocal(); render(); window.scrollTo(0, 0); return;
     case "lev-sair": L.tab = "inicio"; salvarLocal(); render(); window.scrollTo(0, 0); return;
