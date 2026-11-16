@@ -36,7 +36,21 @@ assert.deepStrictEqual(ls.map(x => x.loja), [false, true]);
 assert.deepStrictEqual(P.lugarDa(cats[3]), ["DESPESAS FIXAS", "Caminhão/Tijolo", "Cargas"]);
 assert.deepStrictEqual(P.lugarDa(cats[5]), ["DESPESAS FIXAS", "Manutenção", "Manutenção máquina"]);
 assert.deepStrictEqual(P.lugarDa(cats[10]), ["DESPESAS ADICIONAIS", "Outros", "Acidente Moto"]);
-const livros = { geral: P.geral(ctx, hoje), descarga: P.descargaEquipe(ctx, "2026-11", hoje), pessoa: P.descargaPessoa(ctx, ctx.pessoas[0], hoje), manut: P.manutencoes(ctx, hoje), gastos: P.gastos(ctx, hoje) };
+// fornecedores: compras das cargas, pagamentos e saldo
+Regras.definirFornecedores([{ id: "anapolina", nome: "Cerâmica Anapolina" }, { id: "barr", nome: "Ceramica Barr'art" }]);
+ctx.cargas.push({ id: "k2", data: "2026-11-12", vendedor: "Rafael", ceramica: "barr", entregas: [{ cliente: "Leo", mil: 4, medida: "14x19x29" }] });
+ctx.admin.k2 = { custos: [1950] };
+ctx.movs.push(mov("saida", 5000, "2026-11-13", "CERAMICA BARR ART", "Compra de tijolo (cerâmica)", { fornecedor: "barr" }));
+ctx.movs[6].fornecedor = "anapolina";
+const fp = P.fornecedoresPlan(ctx, hoje);
+assert.deepStrictEqual(fp.map(a => a.nome), ["Resumo", "Cerâmica Anapolina", "Ceramica Barr'art"]);
+const txt = JSON.stringify(fp[2].linhas);
+assert.ok(txt.includes("Agendada") && txt.includes("Leo"));
+const fs2 = Regras.fornecedores(ctx, "2000-01-01", "2999-12-31", hoje);
+assert.strictEqual(fs2.anapolina.custoEntregue, 1500 * 3 + 1750 * 5.5 + 800 * 2);
+assert.strictEqual(fs2.anapolina.pago, 9625);
+assert.strictEqual(fs2.barr.custoAgendado, 7800); assert.strictEqual(fs2.barr.deveAgora, -5000);
+const livros = { geral: P.geral(ctx, hoje), descarga: P.descargaEquipe(ctx, "2026-11", hoje), pessoa: P.descargaPessoa(ctx, ctx.pessoas[0], hoje), manut: P.manutencoes(ctx, hoje), gastos: P.gastos(ctx, hoje), forn: fp };
 const out = process.argv[2];
 for (const [k, abas] of Object.entries(livros)) { const b = E.livro(abas); assert.strictEqual(b[0], 0x50); if (out) require("fs").writeFileSync(out + "/" + k + ".xlsx", b); }
 console.log("planilhas: tudo certo");

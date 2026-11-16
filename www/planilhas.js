@@ -454,6 +454,86 @@ function gastos(ctx, hoje, ano) {
   return [a];
 }
 
-const api = { geral, painel, resumoMeses, movimentos, entregas, contas, eventosDescarga, abaDescarga, descargaPessoa, descargaEquipe, manutencoes, linhasManut, gastos, lugarDa, MODELO, mesNome, fimMes, addMes };
+/* ---------- controle de fornecedores (cerâmicas) ---------- */
+// compras vêm das cargas do app da Tijolos (cerâmica + preço de custo de cada entrega); pagamentos vêm dos lançamentos "Compra de tijolo"
+function linhasForn(ctx, f, hoje) {
+  const compras = [];
+  f.cargas.forEach(o => { const custos = ((ctx.admin || {})[o.c.id] || {}).custos || [];
+    (o.c.entregas || []).forEach((e, i) => compras.push({ dia: String(o.c.data).slice(0, 10), cliente: e.cliente || "", medida: e.medida || "", mil: +e.mil || 0, preco: +custos[i] || 0, futura: o.futura })); });
+  compras.sort((a, b) => a.dia.localeCompare(b.dia));
+  const pagos = f.pagos.slice().sort((a, b) => new Date(a.quando) - new Date(b.quando)).map(m => ({ dia: diaMov(m), quem: m.contraparte || "", banco: m.banco || "", obs: m.obs || "", valor: +m.valor || 0 }));
+  return { compras, pagos };
+}
+function fornecedoresPlan(ctx, hoje) {
+  const fs = Object.values(R.fornecedores(ctx, "2000-01-01", "2999-12-31", hoje)).filter(f => f.cargas.length || f.pagos.length);
+  const r = novaAba("Resumo", "7C2D12"), abas = [];
+  const cabs = ["Cerâmica", "Cargas", "Milheiros", "Tijolo já entregue", "Agendado", "Já pago", "Deve agora", "Deve com agendadas"];
+  r.larg = [28, 9, 11, 17, 15, 15, 15, 17];
+  cabecalho(r, "CONTROLE DE FORNECEDORES · COMPRA DE TIJOLO E PAGAMENTOS", geradoEm(hoje) + " · compras das cargas do app da Tijolos, pagamentos dos lançamentos de compra de tijolo", cabs.length);
+  r.linhas.push(cabs.map(v => ({ v, s: S.cab }))); r.alturas[r.linhas.length - 1] = 30;
+  const l0 = r.linhas.length;
+  fs.forEach(f => {
+    const l = r.linhas.length + 1;
+    r.linhas.push([{ v: f.nome, s: com(S.txt, { b: true }) }, { v: f.cargas.length, s: com(S.txt, { al: "center" }) }, { v: f.mil, s: S.num }, { v: f.custoEntregue, s: S.moeda }, { v: f.custoAgendado, s: com(S.moeda, { fundo: AMARELO }) }, ent(f.pago),
+      { v: f.deveAgora, f: `D${l}-F${l}`, s: com(S.moeda, { b: true, cor: f.deveAgora > 0 ? VERMELHO : VERDE_TXT }) }, { v: f.deveTudo, f: `D${l}+E${l}-F${l}`, s: com(S.moeda, { b: true }) }]);
+  });
+  if (!fs.length) r.linhas.push([{ v: "Nenhuma carga nem pagamento à cerâmica ainda.", s: S.sub }]);
+  const l1 = r.linhas.length, t = c => ({ v: null, f: `SUM(${c}${l0 + 1}:${c}${l1})`, s: S.totalM });
+  r.linhas.push([{ v: "Total", s: S.total }, { v: null, f: `SUM(B${l0 + 1}:B${l1})`, s: com(S.total, { al: "center" }) }, { v: null, f: `SUM(C${l0 + 1}:C${l1})`, s: com(S.total, { fmt: "num" }) }, t("D"), t("E"), t("F"), t("G"), t("H")]);
+  r.linhas.push([]);
+  r.linhas.push([{ v: "Deve agora = tijolo já entregue menos o que já foi pago. Valor negativo quer dizer que você pagou adiantado.", s: S.sub }]);
+  const semNome = (fs.find(f => f.chave === "outra") || { pagos: [] }).pagos.filter(m => !m.contraparte || /outra/i.test(m.contraparte));
+  if (semNome.length) r.linhas.push([{ v: semNome.length + " pagamento(s) à cerâmica estão sem cerâmica definida (em \"Outra cerâmica\"). No app, toque no lançamento e escolha a cerâmica certa que a conta se ajusta.", s: com(S.sub, { cor: VERMELHO }) }]);
+  r.congelar = l0;
+  fs.forEach(f => {
+    const a = novaAba(f.nome.slice(0, 31), "7C2D12"), { compras, pagos } = linhasForn(ctx, f, hoje);
+    a.larg = [12, 30, 16, 12, 15, 16, 13];
+    cabecalho(a, f.nome.toUpperCase(), geradoEm(hoje) + " · desde a primeira carga", 7);
+    // números
+    a.linhas.push([{ v: "Tijolo já entregue", s: S.kRot }, { v: "", s: S.kRot }, { v: "Agendado", s: S.kRot }, { v: "Já pago", s: S.kRot }, { v: "", s: S.kRot }, { v: "Deve agora", s: S.kRot }, { v: "", s: S.kRot }]);
+    a.linhas.push([{ v: f.custoEntregue, s: S.kVal }, { v: "", s: S.kVal }, { v: f.custoAgendado, s: S.kVal }, { v: f.pago, s: com(S.kVal, { cor: VERDE_TXT }) }, { v: "", s: S.kVal }, { v: f.deveAgora, s: com(S.kVal, { cor: f.deveAgora > 0 ? VERMELHO : VERDE_TXT }) }, { v: "", s: S.kVal }]);
+    const k = a.linhas.length; a.mesclas.push(`A${k - 1}:B${k - 1}`, `A${k}:B${k}`, `D${k - 1}:E${k - 1}`, `D${k}:E${k}`, `F${k - 1}:G${k - 1}`, `F${k}:G${k}`); a.alturas[k - 1] = 26;
+    a.linhas.push([]);
+    // compras
+    a.linhas.push([{ v: "Compras de tijolo", s: S.secao }]);
+    a.linhas.push(["Data", "Cliente", "Medida", "Milheiros", "Custo do milheiro", "Total", "Situação"].map(v => ({ v, s: S.cab })));
+    const c0 = a.linhas.length;
+    compras.forEach(x => { const l = a.linhas.length + 1, fundo = x.futura ? AMARELO : null, st = o => fundo ? com(o, { fundo }) : o;
+      a.linhas.push([{ v: x.dia, s: st(S.data) }, { v: x.cliente, s: st(S.txt) }, { v: x.medida, s: st(S.txt) }, { v: x.mil, s: st(S.num) }, { v: x.preco || "", s: st(x.preco ? S.moeda : com(S.moeda, { fundo: VERMELHO_CLARO })) }, { v: r2(x.mil * x.preco), f: `D${l}*N(E${l})`, s: st(com(S.moeda, { b: true })) }, { v: x.futura ? "Agendada" : x.preco ? "Entregue" : "Sem preço de custo", s: st(com(S.txt, { al: "center" })) }]); });
+    if (!compras.length) a.linhas.push([{ v: "Nenhuma carga dessa cerâmica.", s: S.sub }]);
+    const c1 = a.linhas.length;
+    a.linhas.push([{ v: "Total comprado", s: S.total }, { v: "", s: S.total }, { v: "", s: S.total }, { v: f.mil, f: `SUM(D${c0 + 1}:D${c1})`, s: com(S.total, { fmt: "num" }) }, { v: "", s: S.total }, { v: f.custo, f: `SUM(F${c0 + 1}:F${c1})`, s: S.totalM }, { v: "", s: S.total }]);
+    a.mesclas.push(`A${c1 + 1}:C${c1 + 1}`);
+    a.linhas.push([]);
+    // pagamentos
+    a.linhas.push([{ v: "Pagamentos", s: S.secao }]);
+    a.linhas.push(["Data", "Pago a", "Banco", "Observação", "", "Valor", ""].map(v => ({ v, s: S.cab })));
+    const p0 = a.linhas.length; a.mesclas.push(`D${p0}:E${p0}`);
+    pagos.forEach(x => { const l = a.linhas.length; a.linhas.push([{ v: x.dia, s: S.data }, { v: x.quem, s: S.txt }, { v: x.banco, s: S.txt }, { v: x.obs, s: com(S.txt, { quebra: true }) }, { v: "", s: S.txt }, ent(x.valor), { v: "", s: S.txt }]); a.mesclas.push(`D${l + 1}:E${l + 1}`); });
+    if (!pagos.length) a.linhas.push([{ v: "Nenhum pagamento a essa cerâmica.", s: S.sub }]);
+    const p1 = a.linhas.length;
+    a.linhas.push([{ v: "Total pago", s: S.total }, { v: "", s: S.total }, { v: "", s: S.total }, { v: "", s: S.total }, { v: "", s: S.total }, { v: f.pago, f: `SUM(F${p0 + 1}:F${p1})`, s: S.totalM }, { v: "", s: S.total }]);
+    a.mesclas.push(`A${p1 + 1}:E${p1 + 1}`);
+    a.linhas.push([]);
+    // conta corrente
+    a.linhas.push([{ v: "Conta corrente (dia a dia)", s: S.secao }]);
+    a.linhas.push(["Data", "O que foi", "", "", "Compra", "Pagamento", "Saldo a pagar"].map(v => ({ v, s: S.cab })));
+    const ev = compras.map(x => ({ dia: x.dia, txt: "Carga " + [x.cliente, x.medida].filter(Boolean).join(" · ") + " (" + String(x.mil).replace(".", ",") + " mil)" + (x.futura ? " · agendada" : ""), compra: r2(x.mil * x.preco), pag: 0, futura: x.futura, o: 0 }))
+      .concat(pagos.map(x => ({ dia: x.dia, txt: "Pagamento" + (x.quem ? " · " + x.quem : ""), compra: 0, pag: x.valor, o: 1 })))
+      .sort((a, b) => a.dia.localeCompare(b.dia) || a.o - b.o);
+    let saldo = 0; const e0 = a.linhas.length; a.mesclas.push(`B${e0}:D${e0}`);
+    ev.forEach((x, i) => { const l = a.linhas.length + 1; saldo = r2(saldo + x.compra - x.pag); const st = o => x.futura ? com(o, { fundo: AMARELO }) : o;
+      a.linhas.push([{ v: x.dia, s: st(S.data) }, { v: x.txt, s: st(S.txt) }, { v: "", s: st(S.txt) }, { v: "", s: st(S.txt) }, x.compra ? sai(x.compra, st(S.moeda)) : { v: "", s: st(S.moeda) }, x.pag ? ent(x.pag, st(S.moeda)) : { v: "", s: st(S.moeda) },
+        { v: saldo, f: (i ? `G${l - 1}+` : "") + `N(E${l})-N(F${l})`, s: st(com(S.moeda, { b: true })) }]);
+      a.mesclas.push(`B${l}:D${l}`); });
+    a.linhas.push([]);
+    a.linhas.push([{ v: "Em amarelo: cargas agendadas, que ainda vão passar. Preço de custo vem do app da Tijolos; se estiver faltando, corrija lá.", s: S.sub }]);
+    a.congelar = 3;
+    abas.push(a);
+  });
+  return [r].concat(abas);
+}
+
+const api = { fornecedoresPlan, geral, painel, resumoMeses, movimentos, entregas, contas, eventosDescarga, abaDescarga, descargaPessoa, descargaEquipe, manutencoes, linhasManut, gastos, lugarDa, MODELO, mesNome, fimMes, addMes };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Planilhas = api;
 })(typeof window !== "undefined" ? window : globalThis);

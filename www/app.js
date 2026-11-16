@@ -486,6 +486,7 @@ async function abrirExcel(qual, ds) {
     if (qual === "descarga") { abas = Planilhas.descargaEquipe(c, L.mes, hoje); nome = "Controle de Descarga " + L.mes; }
     else if (qual === "pessoa") { const p = pessoaDe(ds.p); abas = Planilhas.descargaPessoa(c, p, hoje); nome = "Controle de Descarga " + p.nome; }
     else if (qual === "manut") { abas = Planilhas.manutencoes(c, hoje, ano); nome = "Controle de Manutenções " + ano; }
+    else if (qual === "forn") { abas = Planilhas.fornecedoresPlan(c, hoje); nome = "Controle de Fornecedores " + hoje; }
     else if (qual === "gastos") { abas = Planilhas.gastos(c, hoje, ano); nome = "Controle de Gastos Bruno Tavares " + ano; }
     else { abas = Planilhas.geral(c, hoje, L.mes); nome = "Financeiro Tavares " + hoje; }
     const b64 = Excel.base64(Excel.livro(abas)), arq = nome.replace(/[\\/:*?"<>|]/g, "-") + ".xlsx", tipo = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -526,6 +527,7 @@ function vPlanilhas() {
     cartao("Planilha geral", "Painel com os indicadores de " + esc(mesLabel(L.mes).toLowerCase()) + ", resumo de cada mês, movimentos, entregas (com lucro e margem) e contas.", "geral") +
     cartao("Controle de Descarga", "Uma aba por ajudante e vendedor: descarga ou diária, vales pagos e o saldo de cada um no mês. Na ficha da pessoa tem o histórico mês a mês.", "descarga") +
     cartao("Controle de Manutenções " + ano, "Tudo que caiu em manutenção (caminhão e máquina), mês a mês, separando oficina e loja de peças.", "manut") +
+    cartao("Controle de Fornecedores", "Uma aba por cerâmica: cada compra de tijolo das cargas do app da Tijolos, cada pagamento feito e o saldo a pagar, dia a dia.", "forn") +
     cartao("Controle de Gastos " + ano, "Janeiro a dezembro no modelo da sua planilha, com receitas, despesas fixas, variáveis, extras, adicionais e saldo.", "gastos") +
     '<h2 style="margin-top:8px">Relatórios de viagem</h2><p class="hint">Cada carga entregue vira um relatório no modelo da sua planilha, com os gastos do dia que o app leu dos bancos. Numerados em ordem.</p>' +
     (meses.length ? meses.map((m, i) => { const doMes = rels.filter(x => x.c.data.slice(0, 7) === m).sort((a, b) => b.r.numero - a.r.numero), liq = doMes.reduce((s, x) => s + RelatorioViagem.calcular(dadosRelatorio(x.c)).liquido, 0);
