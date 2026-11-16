@@ -174,6 +174,30 @@ function duplicado(m, ctx, usados) {
   return !!x;
 }
 
+/* extrato inteiro contra o que já está no app: casa cada linha com UM lançamento que já existe
+   (mesmo tipo, mesmo valor, até 1 dia de diferença). O nome só desempata, porque o comprovante
+   e a notificação muitas vezes trazem outro nome ("Diesel", "Fabinho", "Origem").
+   Devolve um Set com as linhas do extrato que já estavam anotadas. */
+function jaAnotados(itens, ctx) {
+  const chaves = new Set(ctx.movs.map(x => x.chave)), ja = new Set(), pares = [];
+  const diaN = q => pd(diaDe(typeof q === "number" ? q : new Date(q).getTime())).getTime() / 864e5;
+  const exist = ctx.movs.filter(x => x.origem !== "levantamento" && !x.ignorado).map(x => ({ x, d: diaN(x.quando), v: +x.valor }));
+  itens.forEach((m, i) => {
+    if (chaves.has(m.chave)) { ja.add(m); return; }
+    const d = diaN(m.quando);
+    exist.forEach((e, j) => {
+      if (e.x.tipo !== m.tipo || Math.abs(e.v - m.valor) >= 0.01) return;
+      const dd = Math.abs(Math.round(e.d - d)); if (dd > 1) return;
+      const nome = e.x.contraparte && m.contraparte ? parecidos(e.x.contraparte, m.contraparte) : 0;
+      pares.push({ i, j, nota: dd * 10 - Math.min(nome, 3) * 4 + (e.x.origem === "extrato" ? 0 : 1) });
+    });
+  });
+  pares.sort((a, b) => a.nota - b.nota);
+  const usI = new Set(), usJ = new Set();
+  pares.forEach(p => { if (usI.has(p.i) || usJ.has(p.j) || ja.has(itens[p.i])) return; usI.add(p.i); usJ.add(p.j); ja.add(itens[p.i]); });
+  return ja;
+}
+
 /* ---------- alertas ---------- */
 // entrega sem recebimento: depois das 20h do dia da carga; com prazo: 24h depois do vencimento
 function alertas(ctx, agora, desde) {
@@ -322,6 +346,6 @@ function resumoPeriodo(ctx, de, ate) {
   return { entEmp: r2(entEmp), dinheiro, entPes, saiEmp, saiPes, catEmp: porCat("saida", "empresa"), catPes: porCat("saida", "pessoal"), cargas, pendentes, resultadoEmp: r2(entEmp - saiEmp) };
 }
 
-const api = { definirFornecedores, contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
+const api = { jaAnotados, definirFornecedores, contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Regras = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -178,8 +178,8 @@ function rotuloPrevisto(x, k) {
   return c ? c.nome + (c.escopo === "pessoal" ? " (pessoal)" : "") : null;
 }
 function janelaExtrato(ex) {
-  const usados = new Set(), chaves = new Set(D.movs.map(x => x.chave)), c = ctx(), novos = [], ja = [];
-  ex.itens.forEach(x => (chaves.has(x.chave) || R.duplicado(x, c, usados) ? ja : novos).push(x));
+  const c = ctx(), anotados = R.jaAnotados(ex.itens, c), novos = [], ja = [];
+  ex.itens.forEach(x => (anotados.has(x) ? ja : novos).push(x));
   novos.sort((a, b) => a.quando - b.quando);
   extAtual = { novos, ja, banco: ex.banco };
   const dias = ex.itens.map(x => R.diaDe(x.quando)).sort(), soma = (l, t) => l.filter(x => x.tipo === t).reduce((s, x) => s + x.valor, 0);
@@ -192,6 +192,7 @@ function janelaExtrato(ex) {
     '<section class="card"><div class="row"><b>' + novos.length + ' novos</b><span class="muted">' + ja.length + " já estavam anotados</span></div>" +
     (novos.length ? '<div class="row"><span class="pos">Entradas ' + brl(soma(novos, "entrada")) + '</span><span class="neg">Saídas ' + brl(soma(novos, "saida")) + "</span></div>" +
       '<p class="hint">' + (novos.length - nPerg) + " já sei separar sozinho" + (nPerg ? " · " + nPerg + " vou te perguntar no Início" : "") + "</p>" : "") + "</section>" +
+    (ja.length ? '<details class="card"><summary>Ver os ' + ja.length + ' que já estavam anotados (não vou lançar de novo)</summary>' + ja.map(x => '<div class="mv"><div class="grow"><div class="trunc">' + esc(x.contraparte || "Sem nome") + '</div><div class="muted">' + diaCurto(R.diaDe(x.quando)) + '</div></div><div class="v muted">' + (x.tipo === "entrada" ? "+" : "−") + brl(x.valor) + "</div></div>").join("") + "</details>" : "") +
     (novos.length ? '<div style="max-height:46vh;overflow:auto">' + prev.map(({ x, rot }) => '<div class="mv"><div class="grow"><div class="trunc"><b>' + esc(x.contraparte || x.texto || "Sem nome") + '</b></div><div class="muted trunc">' + diaCurto(R.diaDe(x.quando)) + " · " + (rot ? esc(rot) : '<span class="chip red">Perguntar</span>') + '</div></div><div class="v ' + (x.tipo === "entrada" ? "pos" : "neg") + '">' + (x.tipo === "entrada" ? "+" : "−") + brl(x.valor) + "</div></div>").join("") + "</div>" +
       '<div class="btns"><button class="pri" data-acao="ext-lancar">Lançar ' + (novos.length === 1 ? "o novo" : "os " + novos.length + " novos") + '</button><button data-acao="comp-prox">Cancelar</button></div>'
       : '<p>Tudo desse extrato já estava no app. Nada pra lançar.</p><div class="btns"><button class="pri" data-acao="comp-prox">Fechar</button></div>'));
