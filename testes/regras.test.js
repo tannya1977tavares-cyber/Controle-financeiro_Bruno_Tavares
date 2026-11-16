@@ -58,6 +58,36 @@ const ex = n => ({ tipo: "saida", valor: 150, contraparte: n, quando: new Date("
 assert.strictEqual(R.duplicado(ex("MARCOS PEREIRA"), c2, usados), true);
 assert.strictEqual(R.duplicado(ex("MARCOS PEREIRA"), c2, usados), false);
 assert.strictEqual(R.duplicado(ex("CARLOS SOUZA"), c2, new Set()), false);
+// extrato: reconhece o que já foi anotado (comprovante com nome genérico, notificação, mesma chave)
+const q = (d, h) => new Date(d + "T" + h).toISOString();
+const ja = { movs: [
+  { id: "a", origem: "comprovante", tipo: "saida", valor: 500, contraparte: "Diesel", quando: q("2026-11-02", "14:30:00") },
+  { id: "b", origem: "notificacao", tipo: "saida", valor: 500, contraparte: "Autopostovip", quando: q("2026-11-03", "01:42:00") },
+  { id: "c", origem: "comprovante", tipo: "saida", valor: 200, contraparte: "Origem", quando: q("2026-11-03", "13:39:00") },
+  { id: "d", origem: "comprovante", tipo: "entrada", valor: 10534, contraparte: "Pagamento Paulo Costa", quando: q("2026-11-03", "11:01:00") },
+  { id: "e", origem: "levantamento", tipo: "saida", valor: 80, contraparte: "", quando: q("2026-11-05", "12:00:00") },
+  { id: "f", origem: "comprovante", tipo: "saida", valor: 23, contraparte: "", quando: q("2026-11-06", "10:31:00") },
+  { id: "g", origem: "extrato", chave: "csv|x1", tipo: "saida", valor: 60, contraparte: "CASA DO PEDREIRO", quando: q("2026-11-03", "12:00:00") }
+] };
+const it = (tipo, valor, d, nome, chave) => ({ tipo, valor, contraparte: nome, quando: new Date(d + "T12:00:00").getTime(), chave: chave || "csv|" + nome + valor });
+const itens = [
+  it("saida", 500, "2026-11-02", "AUTO POSTO SANTANA"),   // = comprovante Diesel
+  it("saida", 500, "2026-11-03", "AUTO POSTO BURITI"),    // = notificação do dia 3
+  it("saida", 200, "2026-11-03", "Maurício Alves"),       // = comprovante "Origem"
+  it("saida", 200, "2026-11-03", "LUCAS TAVARES"),        // segundo de 200: novo
+  it("entrada", 10534, "2026-11-03", "IP CONSTRUCAO"),    // = comprovante de recebimento
+  it("saida", 10534, "2026-11-03", "IP CONSTRUCAO"),      // tipo diferente: novo
+  it("saida", 80, "2026-11-05", "GILBERTO"),              // levantamento não conta: novo
+  it("saida", 23, "2026-11-10", "Aurora"),                // 4 dias longe: novo
+  it("saida", 60, "2026-11-03", "CASA DO PEDREIRO", "csv|x1") // mesmo extrato de novo
+];
+const marc = R.jaAnotados(itens, ja);
+assert.deepStrictEqual(itens.map(x => marc.has(x)), [true, true, true, false, true, false, false, false, true]);
+// um lançamento apagado (ignorado) não esconde o do extrato, mas a mesma chave sim
+const ign = { movs: [{ id: "z", origem: "comprovante", tipo: "saida", valor: 5200, contraparte: "", ignorado: true, quando: q("2026-11-10", "16:29:00") }, { id: "y", origem: "extrato", chave: "csv|k9", ignorado: true, tipo: "saida", valor: 500, quando: q("2026-11-02", "12:00:00") }] };
+const it2 = [it("saida", 5200, "2026-11-10", "FERREIRA"), it("saida", 500, "2026-11-02", "POSTO", "csv|k9")];
+const m2 = R.jaAnotados(it2, ign);
+assert.deepStrictEqual(it2.map(x => m2.has(x)), [false, true]);
 console.log("extrato: tudo certo");
 // cerâmica e fornecedores
 {
