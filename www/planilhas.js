@@ -246,6 +246,7 @@ function eventosDescarga(ctx, p, mes, hoje) {
     const diaria = r2((+p.salario_mes || 0) / 20);
     R.diasUteis(ini, ate).forEach(d => { const falta = f.faltas.includes(d); ev.push({ dia: d, carga: falta ? "Não atendeu" : "Diária", descarga: falta ? 0 : diaria, vale: 0, falta }); });
   }
+  (f.motor || []).forEach(m => ev.push({ dia: m.dia, carga: "Motorista na " + m.papel + (m.c.vendedor ? " · " + m.c.vendedor : ""), descarga: m.valor, vale: 0 }));
   f.pix.forEach(m => ev.push({ dia: diaMov(m), carga: "Vale · " + (m.banco || "Pix") + (m.obs ? " · " + m.obs : ""), descarga: 0, vale: +m.valor || 0 }));
   ev.sort((x, y) => x.dia.localeCompare(y.dia) || (x.vale ? 1 : 0) - (y.vale ? 1 : 0));
   const ganhou = soma(ev.map(e => e.descarga)), pago = soma(ev.map(e => e.vale));

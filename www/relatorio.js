@@ -129,8 +129,20 @@
     const principal = ids.includes(chave) ? chave : ids.slice().sort()[0], lp = vs.find(v => v.carga_id === principal);
     return { chave, principal, ids, junta: ids.length > 1, carregamento: (lp && lp.carregamento) || null };
   }
-  /* carregamento: {fornecedor:true} = a cerâmica carregou (sem custo); senão {quem, motorista, valor} */
+  /* carregamento = {fornecedor, carregadores:[nomes, até 4], valor (pago pra carregar), motorista, motoristaValor (ganho na carregada),
+                     entrega:{motorista, valor} (ganho na entrega)}. fornecedor:true = a cerâmica carregou (sem custo de carregar).
+     Versão antiga tinha quem:"nome" no lugar de carregadores. */
   const valorCarregamento = cr => cr && !cr.fornecedor && isFinite(+cr.valor) && +cr.valor > 0 ? r2(+cr.valor) : 0;
+  const carregadores = cr => !cr ? [] : (Array.isArray(cr.carregadores) ? cr.carregadores : [cr.quem]).map(x => String(x || "").trim()).filter(Boolean).slice(0, 4);
+  /* o que cada motorista ganhou na viagem: na carregada e na entrega */
+  function motoristas(cr) {
+    if (!cr) return [];
+    const out = [], num = v => isFinite(+v) && +v > 0 ? r2(+v) : 0;
+    if (num(cr.motoristaValor) || (cr.motorista && cr.motoristaValor != null)) out.push({ papel: "carregada", nome: String(cr.motorista || "").trim(), valor: num(cr.motoristaValor) });
+    const e = cr.entrega || {};
+    if (num(e.valor) || (e.motorista && e.valor != null)) out.push({ papel: "entrega", nome: String(e.motorista || "").trim(), valor: num(e.valor) });
+    return out.filter(m => m.valor > 0);
+  }
   const ehCarregamento = nome => linhaDoGasto(nome).linha === 17;
   /* custos da viagem. Se o carregamento também saiu no banco (categoria Carregada ligada à viagem),
      vale o maior dos dois, nunca a soma. */
@@ -141,8 +153,9 @@
     const soma = l => r2(l.reduce((s, x) => s + (+x.valor || 0), 0));
     const noBanco = soma(gastos.filter(m => ehCarregamento(catNome(m.categoria_id))));
     const carregamento = r2(Math.max(0, valorCarregamento(v.carregamento) - noBanco));
-    const totalGastos = soma(gastos), totalAjud = soma(ajud);
-    return { gastos, ajud, totalGastos, totalAjud, carregamento, carregamentoValor: valorCarregamento(v.carregamento), total: r2(totalGastos + totalAjud + carregamento),
+    const totalGastos = soma(gastos), totalAjud = soma(ajud), mot = motoristas(v.carregamento), totalMotorista = soma(mot);
+    return { gastos, ajud, totalGastos, totalAjud, carregamento, carregamentoValor: valorCarregamento(v.carregamento), motoristas: mot, totalMotorista,
+      total: r2(totalGastos + totalAjud + carregamento + totalMotorista),
       ajudEmVarias: new Set(ajud.map(a => a.carga_id)).size > 1 };
   }
 
@@ -158,6 +171,7 @@
      clientes:[{nome, tel, endereco, pagamento, forma, total}],
      ajudantes:[{nome, valor}],                                         o combinado por viagem (descarga)
      carregamento:{valor, quem},                                        o que foi pago pra carregar (valor já sem o que saiu no banco)
+     motoristas:[{papel, nome, valor}],                                  o que o motorista ganhou na carregada e na entrega
      juntoCom,                                                           texto quando a carga foi junto na viagem de outra
      gastos:[{quando:ms, categoria, onde, valor, banco}],                saídas ligadas à carga
      freteRetorno
@@ -208,10 +222,12 @@
     const cel = {}; const add = (ref, v) => { cel[ref] = r2((cel[ref] || 0) + v); };
     const carr = dados.carregamento && +dados.carregamento.valor > 0 ? dados.carregamento : null;
     if (carr) add("C17", +carr.valor);
+    const mots = (dados.motoristas || []).filter(m => +m.valor > 0);
     aj.slice(0, 2).forEach((a, i) => add((i ? "D" : "C") + 17, +a.valor || 0));
     const ajFora = aj.slice(2).reduce((s, a) => s + (+a.valor || 0), 0);
     if (ajFora) add("D17", ajFora);
     const variaveis = {}; let totVar = 0; const lanc = [];
+    mots.forEach(m => { variaveis.Motorista = r2((variaveis.Motorista || 0) + +m.valor); totVar += +m.valor; });
     (dados.gastos || []).slice().sort((a, b) => a.quando - b.quando).forEach(g => {
       const l = linhaDoGasto(g.categoria);
       if (l.linha) add("C" + l.linha, +g.valor || 0); else { variaveis[l.nome] = r2((variaveis[l.nome] || 0) + (+g.valor || 0)); totVar += +g.valor || 0; }
@@ -243,10 +259,11 @@
     const tot = calcular(dados);
     const linhasAba = [["Data", "Hora", "Tipo", "Categoria", "Onde / quem", "Valor (R$)", "Banco", "Origem"]];
     aj.forEach(a => linhasAba.push([dataBR(dados.data), "", "Pagamento", "Ajudante da carga", a.nome, +a.valor || 0, "", "Combinado"]));
-    if (carr) linhasAba.push([dataBR(dados.data), "", "Pagamento", "Carregamento", [carr.quem, carr.motorista ? "motorista " + carr.motorista : ""].filter(Boolean).join(" · "), +carr.valor, "", "Anotado no app"]);
+    if (carr) linhasAba.push([dataBR(dados.data), "", "Pagamento", "Carregamento", carr.quem || "", +carr.valor, "", "Anotado no app"]);
+    mots.forEach(m => linhasAba.push([dataBR(dados.data), "", "Pagamento", "Motorista na " + m.papel, m.nome || "", +m.valor, "", "Anotado no app"]));
     lanc.forEach(l => linhasAba.push(l));
     linhasAba.push([], ["", "", "", "Venda de tijolo", "", tot.tijolo], ["", "", "", "Frete cobrado", "", tot.frete], ["", "", "", "Pagamento à cerâmica", "", -tot.ceramica],
-      ["", "", "", "Pagamentos (ajudantes, descarga, carregamento)", "", -tot.pagamentos], ["", "", "", "Gastos (diesel, comida, pedágio…)", "", -tot.gastos], ["", "", "", "Líquido da carga", "", tot.liquido]);
+      ["", "", "", "Pagamentos (ajudantes, descarga, carregamento, motorista)", "", -tot.pagamentos], ["", "", "", "Gastos (diesel, comida, pedágio…)", "", -tot.gastos], ["", "", "", "Líquido da carga", "", tot.liquido]);
     pl.aba("Lançamentos", linhasAba);
     return pl.bytes();
   }
@@ -256,7 +273,7 @@
     const tijolo = r2(dados.itens.reduce((s, it) => s + (+it.mil || 0) * (+it.preco || 0), 0));
     const frete = r2(dados.itens.reduce((s, it) => s + (+it.frete || 0), 0));
     const ceramica = r2(dados.itens.reduce((s, it) => s + milCompra(it) * (+it.custo || 0), 0));
-    let pagamentos = r2((dados.ajudantes || []).reduce((s, a) => s + (+a.valor || 0), 0) + (dados.carregamento ? +dados.carregamento.valor || 0 : 0)), gastos = 0;
+    let pagamentos = r2((dados.ajudantes || []).reduce((s, a) => s + (+a.valor || 0), 0) + (dados.carregamento ? +dados.carregamento.valor || 0 : 0) + (dados.motoristas || []).reduce((s, m) => s + (+m.valor || 0), 0)), gastos = 0;
     (dados.gastos || []).forEach(g => { if (linhaDoGasto(g.categoria).tipo === "Pagamento") pagamentos += +g.valor || 0; else gastos += +g.valor || 0; });
     pagamentos = r2(pagamentos); gastos = r2(gastos);
     const bruto = r2(tijolo + frete + (+dados.freteRetorno || 0));
@@ -301,12 +318,13 @@
       rota, fiadas, ocupacao, itens: ents.map((e, i) => ({ medida: e.medida, mil: +e.mil || 0, preco: +e.preco || 0, frete: +e.frete || 0, custo: +(f.custos || [])[i] || 0,
         compra: e.carregado && e.carregado.mil != null && isFinite(+e.carregado.mil) ? +e.carregado.mil : +e.mil || 0 })),
       clientes, ajudantes, gastos, freteRetorno: +f.freteRetorno || 0,
-      carregamento: principal && cv.carregamento ? { valor: cv.carregamento, quem: (v.carregamento || {}).quem || "", motorista: (v.carregamento || {}).motorista || "" } : null,
+      carregamento: principal && cv.carregamento ? { valor: cv.carregamento, quem: carregadores(v.carregamento).join(", ") } : null,
+      motoristas: principal ? cv.motoristas : [],
       juntoCom: v.junta ? (principal ? "Viagem com " + v.ids.length + " cargas: descarga, carregamento e gastos estão todos neste relatório."
         : "Foi junto na viagem da carga principal" + (f.numeroDe && f.numeroDe(v.principal) ? " (relatório nº " + String(f.numeroDe(v.principal)).padStart(4, "0") + ")" : "") + ": descarga, carregamento e gastos estão lá.") : "" };
   }
 
   const nomeArquivo = d => "Relatorio de Viagem " + String(d.numero || "").padStart(4, "0") + " - " + dataBR(d.data).replace(/\//g, "-") + ".xlsx";
-  const api = { montar, calcular, dadosDe, linhaDoGasto, nomeArquivo, zipar, viagemDe, custosViagem, valorCarregamento };
+  const api = { montar, calcular, dadosDe, linhaDoGasto, nomeArquivo, zipar, viagemDe, custosViagem, valorCarregamento, carregadores, motoristas };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.RelatorioViagem = api;
 })(typeof window !== "undefined" ? window : globalThis);

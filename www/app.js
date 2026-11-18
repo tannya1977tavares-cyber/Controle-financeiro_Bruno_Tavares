@@ -369,6 +369,27 @@ function chipEntrega(c, i) {
 }
 
 /* ---------- telas ---------- */
+/* ---------- lucro líquido da semana: Tijolos Tavares e você ---------- */
+const euNome = () => (D.perfil && D.perfil.nome) || "Bruno";
+function liquidoSemanaHtml() {
+  const de = L.semana, ate = addDias(de, 6), l = R.liquido(ctx(), de, ate, euNome());
+  const card = (qual, titulo, x, sub) => '<button class="liq ' + (x.liquido >= 0 ? "pos" : "neg") + '" data-acao="liq-abrir" data-q="' + qual + '"><span class="liq-t">' + titulo + '</span><span class="liq-v">' + brl0(x.liquido) + '</span><span class="liq-s">' + sub + "</span></button>";
+  return '<section class="card"><h2>Lucro líquido da semana</h2><div class="nav"><button class="small" data-acao="semana" data-n="-7" aria-label="Semana anterior">‹</button><b>' + diaCurto(de) + " a " + diaCurto(ate) + '</b><button class="small" data-acao="semana" data-n="7" aria-label="Próxima semana">›</button></div>' +
+    '<div class="liqs">' + card("empresa", "Tijolos Tavares", l.empresa, "entrou " + brl0(l.empresa.entrou) + " · saiu " + brl0(l.empresa.saiu)) +
+    card("pessoal", "Bruno pessoal", l.pessoal, (l.salario ? "salário de motorista " + brl0(l.salario) + " · " : "") + "gastou " + brl0(l.pessoal.saiu)) + "</div>" +
+    '<p class="hint">Toque em um deles pra ver por categoria.' + (l.pendentes ? " Tem " + l.pendentes + " movimento(s) da semana esperando sua resposta; os números ficam certos depois." : "") + "</p></section>";
+}
+function janelaLiquido(qual) {
+  const de = L.semana, ate = addDias(de, 6), l = R.liquido(ctx(), de, ate, euNome()), x = l[qual];
+  const lista = (itens, cls) => itens.length ? itens.map(i => '<div class="row"><span class="grow">' + esc(i.nome) + '</span><b class="' + cls + '">' + brl0(i.v) + "</b></div>").join("") : '<p class="muted">Nada.</p>';
+  abrirJanela("<h2>" + (qual === "empresa" ? "Tijolos Tavares" : "Bruno pessoal") + " · " + diaCurto(de) + " a " + diaCurto(ate) + "</h2>" +
+    '<h3 style="margin-top:10px">Entrou · ' + brl0(x.entrou) + "</h3>" + lista(x.entradas, "pos") +
+    '<h3 style="margin-top:14px">Saiu · ' + brl0(x.saiu) + "</h3>" + lista(x.saidas, "neg") +
+    '<div class="row" style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px"><b>Líquido</b><b class="' + (x.liquido >= 0 ? "pos" : "neg") + '" style="font-size:22px">' + brl0(x.liquido) + "</b></div>" +
+    (qual === "empresa" ? '<p class="hint">Inclui o dinheiro recebido em mãos, o carregamento pago fora do banco e o seu salário de motorista, que sai da empresa e entra no seu pessoal.</p>' : '<p class="hint">O salário vem do que você ganhou como motorista nas viagens (anotado no app da Tijolos).</p>') +
+    '<div class="btns"><button data-acao="fechar">Fechar</button></div>');
+}
+
 function vInicio() {
   const cx = ctx(), al = R.alertas(cx, Date.now(), L.desde), aj = R.cargasSemAjudante(cx, hojeS(), L.desde);
   const pend = D.movs.filter(m => m.pendente && !m.ignorado).sort((a, b) => msDe(a.quando) - msDe(b.quando));
@@ -386,7 +407,7 @@ function vInicio() {
     if (l.length) h += '<section class="card warn" data-acao="ir-contas" style="cursor:pointer"><h2>' + l.length + (l.length > 1 ? " contas vencem" : " conta vence") + " nos próximos 7 dias · " + brl0(l.reduce((t, c) => t + +c.valor, 0)) + '</h2><p class="muted">' + esc(l.slice(0, 3).map(c => c.descricao + " (" + diaCurto(c.vencimento) + ")").join(", ")) + "</p></section>"; }
   if (!L.levOk) h += '<section class="card warn"><h2>Levantamento das últimas semanas</h2><p>Vamos acertar as cargas das últimas 2 semanas e lançar os gastos do mês passado. Depois é só o app ficar de olho nas notificações.</p><div class="btns"><button class="pri" data-acao="lev-abrir">Começar</button></div></section>';
   if (pend.length) h += '<h2 style="margin-top:16px">Preciso de você (' + pend.length + ")</h2>" + pend.slice(0, 3).map(perguntaHtml).join("") + (pend.length > 3 ? '<p class="hint">Mais ' + (pend.length - 3) + " depois dessas.</p>" : "");
-  h += navMes("mes-inicio") +
+  h += liquidoSemanaHtml() + navMes("mes-inicio") +
     '<section class="card"><h2>Empresa</h2><div class="stats"><div class="stat"><div class="l">Entrou</div><div class="v pos">' + brl0(r.entEmp) + '</div></div><div class="stat"><div class="l">Saiu</div><div class="v neg">' + brl0(r.saiEmp) + '</div></div><div class="stat"><div class="l">Sobrou</div><div class="v">' + brl0(r.resultadoEmp) + '</div></div><div class="stat"><div class="l">Falta receber</div><div class="v" style="color:var(--warn)">' + brl0(aReceber) + "</div></div></div>" + (fiado ? '<p class="hint">Fiado com prazo: ' + brl0(fiado) + "</p>" : "") + "</section>" +
     '<section class="card"><h2>Pessoal</h2><div class="stats"><div class="stat"><div class="l">Entrou</div><div class="v pos">' + brl0(r.entPes) + '</div></div><div class="stat"><div class="l">Saiu</div><div class="v neg">' + brl0(r.saiPes) + "</div></div></div></section>" +
     '<p class="hint">' + (ultimaSync ? "Atualizado às " + ultimaSync.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "") + (NATIVO ? "" : " · No computador o app não lê notificações; use o celular.") + "</p>";
@@ -428,9 +449,11 @@ function vCargasLista() {
     }).join("");
     return '<section class="card"><div class="row"><h3 style="margin:0">' + esc(cap(diaLongo(c.data))) + '</h3><span class="chip">' + esc(c.vendedor || "") + "</span></div>" + '<div style="margin-top:8px">' + ent + "</div>" +
       '<div class="stats"><div class="stat"><div class="l">Venda</div><div class="v">' + brl0(r.venda) + '</div></div><div class="stat"><div class="l">Tijolo (cerâmica)</div><div class="v neg">' + brl0(r.tijolo) + '</div></div><div class="stat"><div class="l">Gastos da viagem</div><div class="v neg">' + brl0(r.gastosTotal) + '</div></div><div class="stat"><div class="l">Ajudantes</div><div class="v neg">' + brl0(r.ajudTotal) + "</div></div>" +
-        (r.carregamento ? '<div class="stat"><div class="l">Carregamento</div><div class="v neg">' + brl0(r.carregamento) + "</div></div>" : "") + "</div>" +
+        (r.carregamento ? '<div class="stat"><div class="l">Carregamento</div><div class="v neg">' + brl0(r.carregamento) + "</div></div>" : "") +
+        (r.motoristaTotal ? '<div class="stat"><div class="l">Motorista</div><div class="v neg">' + brl0(r.motoristaTotal) + "</div></div>" : "") + "</div>" +
       (r.viagem.junta ? '<p class="hint">' + (r.principal ? "Viagem com " + r.viagem.ids.length + " cargas: descarga, abastecimento e carregamento estão todos nesta carga, uma vez só." : "Foi junto na viagem de outra carga deste dia: descarga, abastecimento e carregamento estão lá.") + "</p>" : "") +
-      (r.principal && r.carregamentoInfo ? '<p class="hint">Carregamento: ' + esc(r.carregamentoInfo.fornecedor ? "a cerâmica carregou" : [r.carregamentoInfo.quem ? "carregou " + r.carregamentoInfo.quem : "", r.carregamentoInfo.motorista ? "motorista " + r.carregamentoInfo.motorista : "", +r.carregamentoInfo.valor ? "pago " + brl0(r.carregamentoInfo.valor) + (r.carregamento < +r.carregamentoInfo.valor ? " (o Pix já está nos gastos)" : "") : ""].filter(Boolean).join(", ")) + "</p>" : "") +
+      (r.principal && r.carregamentoInfo ? '<p class="hint">Carregamento: ' + esc(r.carregamentoInfo.fornecedor ? "a cerâmica carregou" : [RelatorioViagem.carregadores(r.carregamentoInfo).length ? "carregou " + RelatorioViagem.carregadores(r.carregamentoInfo).join(", ") : "", +r.carregamentoInfo.valor ? "pago " + brl0(r.carregamentoInfo.valor) + (r.carregamento < +r.carregamentoInfo.valor ? " (o Pix já está nos gastos)" : "") : ""].filter(Boolean).join(", ")) + "</p>" : "") +
+      (r.motoristas && r.motoristas.length ? '<p class="hint">Motorista: ' + esc(r.motoristas.map(m => (m.nome || "?") + " na " + m.papel + " " + brl0(m.valor)).join(", ")) + "</p>" : "") +
       '<div class="row" style="margin-top:8px"><b>Lucro da carga</b><b class="' + (r.lucro >= 0 ? "pos" : "neg") + '" style="font-size:20px">' + brl0(r.lucro) + "</b></div>" +
       (r.gastos.length || r.ajud.length ? "<details><summary class=\"muted\">Ver gastos e ajudantes</summary>" + r.gastos.map(linhaMovHtml).join("") + r.ajud.map(a => '<div class="row"><span>' + esc((pessoaDe(a.pessoa_id) || {}).nome || "?") + ' <span class="muted">ajudante</span></span><span>' + brl0(a.valor) + "</span></div>").join("") + "</details>" : "") +
       '<div class="btns">' + (r.principal ? '<button class="small" data-acao="aj-editar" data-carga="' + c.id + '">Ajudantes</button>' : "") + (relDe(c.id) ? '<button class="small pri" data-acao="rel" data-carga="' + c.id + '">Relatório nº ' + numRel(relDe(c.id)) + " (Excel)</button>" : "") + '</div><p class="hint" id="rm-' + c.id + '"></p></section>';
@@ -475,6 +498,7 @@ function vFicha(p) {
     (p.tipo === "vendedor" ? '<div class="row"><span>Diárias (' + f.diasTrab + " dias)</span><b>" + brl(f.diarias) + "</b></div>" + (f.faltas.length ? '<p class="hint">Não atendeu: ' + f.faltas.sort().map(d => '<button class="small ghost" data-acao="falta" data-p="' + p.id + '" data-dia="' + d + '">' + diaCurto(d) + " ✕</button>").join(" ") + "</p>" : "") +
       '<div class="row"><span>Vendeu ' + f.vendas.length + " carga(s)</span><span class=\"muted\">" + brl0(f.vendido) + "</span></div>" : "") +
     f.ajud.map(o => '<div class="row"><span>Ajudante na carga de ' + diaCurto(o.c.data) + "</span><b>" + brl(o.x.valor) + "</b></div>").join("") +
+    (f.motor || []).map(m => '<div class="row"><span>Motorista na ' + m.papel + " · " + diaCurto(m.dia) + "</span><b>" + brl(m.valor) + "</b></div>").join("") +
     '<div class="row" style="margin-top:8px"><b>Total no mês</b><b>' + brl(f.ganhou) + "</b></div></section>" +
     '<section class="card"><h2>Recebeu</h2>' + (f.pix.length ? f.pix.sort((a, b) => msDe(a.quando) - msDe(b.quando)).map(linhaMovHtml).join("") : '<p class="muted">Nenhum Pix neste mês.</p>') + '<div class="row" style="margin-top:8px"><b>Total no mês</b><b>' + brl(f.recebeu) + "</b></div></section>";
 }
@@ -602,9 +626,8 @@ function vContas() {
 function vSemana() {
   const de = L.semana, ate = addDias(de, 6), r = R.resumoPeriodo(ctx(), de, ate);
   const barras = (l, cor) => { const mx = Math.max(1, ...l.map(x => x.v)); return l.map(x => '<div style="margin:8px 0"><div class="row"><span>' + esc(x.nome) + "</span><span>" + brl0(x.v) + '</span></div><div class="bar" style="width:' + Math.max(2, x.v / mx * 100) + "%;background:" + cor + '"></div></div>').join("") || '<p class="muted">Nada.</p>'; };
-  return '<div class="nav"><button class="small" data-acao="semana" data-n="-7" aria-label="Semana anterior">‹</button><b>' + diaCurto(de) + " a " + diaCurto(ate) + '</b><button class="small" data-acao="semana" data-n="7" aria-label="Próxima semana">›</button></div>' +
-    (r.pendentes ? '<div class="card warn">Tem ' + r.pendentes + " movimento(s) dessa semana esperando sua resposta. Os números ficam certos depois que você responder.</div>" : "") +
-    '<section class="card"><h2>Empresa</h2><div class="stats"><div class="stat"><div class="l">Entrou</div><div class="v pos">' + brl0(r.entEmp) + '</div></div><div class="stat"><div class="l">Saiu</div><div class="v neg">' + brl0(r.saiEmp) + '</div></div></div><div class="row" style="margin-top:10px"><b>Sobrou na semana</b><b class="' + (r.resultadoEmp >= 0 ? "pos" : "neg") + '" style="font-size:20px">' + brl0(r.resultadoEmp) + "</b></div>" + (r.dinheiro ? '<p class="hint">Inclui ' + brl0(r.dinheiro) + " recebidos em dinheiro.</p>" : "") + barras(r.catEmp, "var(--emp)") + "</section>" +
+  return liquidoSemanaHtml() +
+    '<section class="card"><h2>Empresa (só banco e dinheiro)</h2><div class="stats"><div class="stat"><div class="l">Entrou</div><div class="v pos">' + brl0(r.entEmp) + '</div></div><div class="stat"><div class="l">Saiu</div><div class="v neg">' + brl0(r.saiEmp) + '</div></div></div><div class="row" style="margin-top:10px"><b>Sobrou na semana</b><b class="' + (r.resultadoEmp >= 0 ? "pos" : "neg") + '" style="font-size:20px">' + brl0(r.resultadoEmp) + "</b></div>" + (r.dinheiro ? '<p class="hint">Inclui ' + brl0(r.dinheiro) + " recebidos em dinheiro.</p>" : "") + barras(r.catEmp, "var(--emp)") + "</section>" +
     '<section class="card"><h2>Cargas da semana</h2>' + (r.cargas.length ? r.cargas.map(o => '<div class="row"><span>' + diaCurto(o.c.data) + " · " + esc(o.c.entregas.map(e => e.cliente || "Sem nome").join(", ")) + '</span><b class="' + (o.r.lucro >= 0 ? "pos" : "neg") + '">' + brl0(o.r.lucro) + "</b></div>").join("") : '<p class="muted">Nenhuma carga.</p>') + "</section>" +
     '<section class="card"><h2>Pessoal</h2><div class="stats"><div class="stat"><div class="l">Entrou</div><div class="v pos">' + brl0(r.entPes) + '</div></div><div class="stat"><div class="l">Saiu</div><div class="v neg">' + brl0(r.saiPes) + "</div></div></div>" + barras(r.catPes, "var(--pes)") + "</section>";
 }
@@ -800,6 +823,7 @@ async function acao(a, ds, alvo) {
     case "info-app": if (Avisos) await Avisos.abrirInfoDoApp(); return;
     case "mes": case "mes-inicio": L.mes = addMes(L.mes, +ds.n); salvarLocal(); render(); return;
     case "semana": L.semana = addDias(L.semana, +ds.n); salvarLocal(); render(); return;
+    case "liq-abrir": janelaLiquido(ds.q); return;
     case "filtro": L.filtro = ds.f; salvarLocal(); render(); return;
     case "editar": if (m) janelaEditar(m); return;
     case "novo-mov": janelaNovoMov(); return;

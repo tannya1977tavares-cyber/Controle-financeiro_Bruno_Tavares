@@ -59,3 +59,19 @@ console.log("quantidade carregada: tudo certo");
   assert.strictEqual(RV.viagemDe("b", cargas.slice(1), vinc).principal, "b");
   console.log("viagem e carregamento: tudo certo");
 }
+/* motorista (carregada e entrega) e até 4 carregadores */
+{
+  const cargas = [{ id: "a", data: "2026-11-10", vendedor: "Bruno", ceramica: "anapolina", entregas: [{ cliente: "A", cidade: "Goiânia", medida: "09x19x19", mil: 5, preco: 900 }] }];
+  const cr = { carregadores: ["Zé", "Fabinho", "", "Tião", "Mais um", "Sobra"], valor: 120, motorista: "Bruno", motoristaValor: 100, entrega: { motorista: "Fabinho", valor: 80 } };
+  assert.deepStrictEqual(RV.carregadores(cr), ["Zé", "Fabinho", "Tião", "Mais um"]);
+  assert.deepStrictEqual(RV.carregadores({ quem: "Velho" }), ["Velho"]);
+  const v = RV.viagemDe("a", cargas, [{ carga_id: "a", viagem: "a", carregamento: cr }]);
+  const cv = RV.custosViagem(v, [], [], []);
+  assert.deepStrictEqual([cv.carregamento, cv.totalMotorista, cv.total], [120, 180, 300]);
+  const d = RV.dadosDe({ numero: 9, carga: cargas[0], custos: [600], cadastro: {}, movs: [], cats: [], ajudantes: [], pessoas: [], cargas, vinculos: [{ carga_id: "a", viagem: "a", carregamento: cr }] });
+  assert.strictEqual(RV.calcular(d).pagamentos, 300); assert.strictEqual(RV.montar(d)[0], 0x50);
+  /* cerâmica carregou, mas o motorista ganhou */
+  const cv2 = RV.custosViagem(RV.viagemDe("a", cargas, [{ carga_id: "a", viagem: "a", carregamento: { fornecedor: true, motorista: "Bruno", motoristaValor: 100 } }]), [], [], []);
+  assert.deepStrictEqual([cv2.carregamento, cv2.totalMotorista], [0, 100]);
+  console.log("motorista e carregadores: tudo certo");
+}
