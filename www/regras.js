@@ -11,6 +11,11 @@ const horaDe = ms => { const d = new Date(ms); return d.getHours() + d.getMinute
 const pd = s => { const [y, m, d] = String(s).slice(0, 10).split("-").map(Number); return new Date(y, m - 1, d); };
 const addDias = (s, n) => { const d = pd(s); d.setDate(d.getDate() + n); return ymd(d); };
 const r2 = v => Math.round(v * 100) / 100;
+/* viagem (cargas juntas no mesmo caminhão) e carregamento: lógica no relatorio.js, igual nos dois apps */
+const RV = typeof module !== "undefined" && module.exports ? require("./relatorio.js") : raiz.RelatorioViagem;
+const viagem = (ctx, c) => RV.viagemDe(c.id, ctx.cargas, ctx.viag || []);
+/* milheiros comprados na cerâmica: a "quantidade carregada" quando foi anotada no app da Tijolos */
+const milCompra = e => e.carregado && e.carregado.mil != null && isFinite(+e.carregado.mil) ? +e.carregado.mil : +e.mil || 0;
 
 const LIMITE_DIESEL = 400;
 const RE_POSTO = /\b(posto|postos|auto ?posto|combust\w*|shell|ipiranga|petrobras|br mania|raizen|gasolin\w*|diesel)\b/;
@@ -41,7 +46,7 @@ const fornecedorDoNome = n => {
 };
 
 // categorias que entram no custo da carga quando o gasto é no dia dela
-const DA_CARGA = ["Combustível (diesel)", "Pedágio", "Descarga", "Alimentação na viagem"];
+const DA_CARGA = ["Combustível (diesel)", "Pedágio", "Descarga", "Alimentação na viagem", "Carregada"];
 
 function cat(ctx, nome) { return ctx.cats.find(c => c.nome === nome) || ctx.cats.find(c => c.nome.startsWith(nome)) || null; }
 function catId(ctx, id) { return ctx.cats.find(c => c.id === id) || null; }
@@ -63,7 +68,8 @@ function acharRegra(ctx, m) {
 
 function comCarga(ctx, m, patch) {
   const c = catId(ctx, patch.categoria_id);
-  if (c && DA_CARGA.includes(c.nome)) { const cs = cargasDoDia(ctx, diaDe(m.quando)); if (cs.length) patch.carga_id = cs[0].id; }
+  // gasto da viagem vai pra carga principal dela (cargas juntas contam uma vez só)
+  if (c && DA_CARGA.includes(c.nome)) { const cs = cargasDoDia(ctx, diaDe(m.quando)); if (cs.length) patch.carga_id = viagem(ctx, cs[0]).principal; }
   return patch;
 }
 
@@ -214,7 +220,8 @@ function alertas(ctx, agora, desde) {
 }
 
 function cargasSemAjudante(ctx, hoje, desde) {
-  return ctx.cargas.filter(c => { const d = String(c.data).slice(0, 10); return d <= hoje && (!desde || d >= desde) && !(ctx.info[c.id] && ctx.info[c.id].ajudantes_ok); });
+  // pergunta uma vez por viagem (na carga principal), não por carga
+  return ctx.cargas.filter(c => { const d = String(c.data).slice(0, 10); return d <= hoje && (!desde || d >= desde) && viagem(ctx, c).principal === c.id && !(ctx.info[c.id] && ctx.info[c.id].ajudantes_ok); });
 }
 
 /* ---------- carga por carga ---------- */
@@ -222,15 +229,30 @@ function resumoCarga(ctx, c) {
   const adm = (ctx.admin || {})[c.id] || {}, custos = adm.custos || [];
   let venda = 0, tijolo = 0, recebido = 0;
   (c.entregas || []).forEach((e, i) => {
-    venda += totalEntrega(e); tijolo += (+custos[i] || 0) * (+e.mil || 0);
+    venda += totalEntrega(e); tijolo += (+custos[i] || 0) * milCompra(e);
     const s = situacao(ctx, c.id, i);
     recebido += s && FORA.includes(s.situacao) ? totalEntrega(e) : pagoEntrega(ctx, c.id, i);
   });
-  const gastos = ctx.movs.filter(m => m.tipo === "saida" && !m.ignorado && m.carga_id === c.id && !(catId(ctx, m.categoria_id) || {}).nome?.startsWith("Compra de tijolo"));
-  const gastosTotal = gastos.reduce((s, m) => s + +m.valor, 0);
-  const ajud = ctx.ajudantes.filter(a => a.carga_id === c.id), ajudTotal = ajud.reduce((s, a) => s + +a.valor, 0);
-  return { venda: r2(venda), tijolo: r2(tijolo), recebido: r2(recebido), gastos, gastosTotal: r2(gastosTotal), ajud, ajudTotal: r2(ajudTotal), lucro: r2(venda - tijolo - gastosTotal - ajudTotal) };
+  // custos da viagem (gastos, ajudantes/descarga, carregamento) ficam só na carga principal: somando as cargas, nada duplica
+  const v = viagem(ctx, c), principal = v.principal === c.id;
+  const cv = principal ? RV.custosViagem(v, ctx.movs, ctx.cats, ctx.ajudantes) : { gastos: [], ajud: [], totalGastos: 0, totalAjud: 0, carregamento: 0, carregamentoValor: 0, motoristas: [], totalMotorista: 0, ajudEmVarias: false };
+  return { venda: r2(venda), tijolo: r2(tijolo), recebido: r2(recebido), gastos: cv.gastos, gastosTotal: cv.totalGastos, ajud: cv.ajud, ajudTotal: cv.totalAjud,
+    carregamento: cv.carregamento, carregamentoInfo: v.carregamento, motoristas: cv.motoristas, motoristaTotal: cv.totalMotorista, viagem: v, principal, ajudEmVarias: cv.ajudEmVarias,
+    lucro: r2(venda - tijolo - cv.totalGastos - cv.totalAjud - cv.carregamento - cv.totalMotorista) };
 }
+
+/* ---------- motoristas ----------
+   o que cada motorista ganhou nas viagens (carregada e entrega), anotado no app da Tijolos */
+function ganhosMotorista(ctx, de, ate) {
+  const out = [];
+  ctx.cargas.forEach(c => {
+    const d = String(c.data).slice(0, 10); if (d < de || d > ate) return;
+    const v = viagem(ctx, c); if (v.principal !== c.id) return;
+    RV.motoristas(v.carregamento).forEach(m => out.push(Object.assign({ c, dia: d }, m)));
+  });
+  return out;
+}
+const mesmoNome = (a, b) => { const x = norm(a), y = norm(b); return !!x && !!y && (x === y || x.split(" ")[0] === y || y.split(" ")[0] === x); };
 
 /* ---------- fichas ---------- */
 function diasUteis(de, ate) {
@@ -251,10 +273,11 @@ function ficha(ctx, p, de, ate) {
       faltas = ctx.faltas.filter(f => f.pessoa_id === p.id && f.dia >= ini && f.dia <= b).map(f => f.dia);
       diarias = (dias.length - dias.filter(d => faltas.includes(d)).length) * (+p.salario_mes || 0) / 20;
     }
+    const motor = ganhosMotorista(ctx, ini, b).filter(m => mesmoNome(m.nome, p.nome)), ganhoMot = motor.reduce((s, m) => s + m.valor, 0);
     const pix = ctx.movs.filter(m => m.tipo === "saida" && !m.ignorado && m.pessoa_id === p.id && diaDe(new Date(m.quando).getTime()) >= ini && diaDe(new Date(m.quando).getTime()) <= b);
     const recebeu = pix.reduce((s, m) => s + +m.valor, 0);
     const vendas = p.tipo === "vendedor" ? ctx.cargas.filter(c => norm(c.vendedor) === norm(p.nome) && String(c.data).slice(0, 10) >= ini && String(c.data).slice(0, 10) <= b) : [];
-    return { ajud, ganhoAjud: r2(ganhoAjud), diasTrab: dias.length - faltas.length, faltas, diarias: r2(diarias), ganhou: r2(ganhoAjud + diarias), pix, recebeu: r2(recebeu), vendas, vendido: r2(vendas.reduce((s, c) => s + (c.entregas || []).reduce((t, e) => t + totalEntrega(e), 0), 0)) };
+    return { ajud, ganhoAjud: r2(ganhoAjud), motor, ganhoMot: r2(ganhoMot), diasTrab: dias.length - faltas.length, faltas, diarias: r2(diarias), ganhou: r2(ganhoAjud + diarias + ganhoMot), pix, recebeu: r2(recebeu), vendas, vendido: r2(vendas.reduce((s, c) => s + (c.entregas || []).reduce((t, e) => t + totalEntrega(e), 0), 0)) };
   };
   const periodo = calc(de, ate), geral = calc(p.inicio, ate);
   return Object.assign(periodo, { saldo: r2(geral.ganhou - geral.recebeu) });
@@ -270,7 +293,7 @@ function fornecedores(ctx, de, ate, hoje) {
     const f = out[out[c.ceramica] ? c.ceramica : "outra"], custos = ((ctx.admin || {})[c.id] || {}).custos || [];
     let custoC = 0, milC = 0;
     (c.entregas || []).forEach((e, i) => {
-      const mil = +e.mil || 0, cu = +custos[i] || 0;
+      const mil = milCompra(e), cu = +custos[i] || 0;
       milC += mil; custoC += cu * mil;
       f.medidas[e.medida || "?"] = r2((f.medidas[e.medida || "?"] || 0) + mil);
       if (!cu) f.semCusto.push({ c, e });
@@ -346,6 +369,35 @@ function resumoPeriodo(ctx, de, ate) {
   return { entEmp: r2(entEmp), dinheiro, entPes, saiEmp, saiPes, catEmp: porCat("saida", "empresa"), catPes: porCat("saida", "pessoal"), cargas, pendentes, resultadoEmp: r2(entEmp - saiEmp) };
 }
 
-const api = { jaAnotados, definirFornecedores, contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
+/* ---------- lucro líquido de verdade: Tijolos Tavares (empresa) e você (pessoal) ----------
+   Empresa: o que entrou (banco + dinheiro) menos o que saiu, menos o que foi pago fora do banco nas viagens
+   (carregamento sem Pix, motorista que não é da equipe) e menos o seu salário de motorista.
+   Pessoal: seu salário de motorista + entradas pessoais - gastos pessoais.
+   eu = seu nome (o motorista com esse nome é você). Motorista cadastrado em Pessoas recebe por Pix, então já sai no banco. */
+function liquido(ctx, de, ate, eu) {
+  const ms = ctx.movs.filter(m => !m.ignorado && !m.pendente && (d => d >= de && d <= ate)(diaDe(new Date(m.quando).getTime())));
+  const grupo = (lista) => { const g = {}; lista.forEach(([nome, v]) => { g[nome] = r2((g[nome] || 0) + v); }); return Object.entries(g).map(([nome, v]) => ({ nome, v })).filter(x => x.v).sort((a, b) => b.v - a.v); };
+  const nomeCat = m => (catId(ctx, m.categoria_id) || {}).nome || "Sem categoria";
+  const rp = resumoPeriodo(ctx, de, ate);
+  const mot = ganhosMotorista(ctx, de, ate), meus = mot.filter(m => mesmoNome(m.nome, eu));
+  const equipe = n => (ctx.pessoas || []).some(p => mesmoNome(n, p.nome));
+  const motFora = mot.filter(m => !mesmoNome(m.nome, eu) && !equipe(m.nome));
+  let carregFora = 0;
+  ctx.cargas.forEach(c => { const d = String(c.data).slice(0, 10); if (d < de || d > ate) return; const v = viagem(ctx, c); if (v.principal !== c.id) return; carregFora += RV.custosViagem(v, ctx.movs, ctx.cats, ctx.ajudantes).carregamento; });
+  const salario = r2(meus.reduce((s, m) => s + m.valor, 0));
+  const entEmp = grupo(ms.filter(m => m.tipo === "entrada" && m.escopo === "empresa").map(m => [nomeCat(m), +m.valor]).concat(rp.dinheiro ? [["Recebido em dinheiro", rp.dinheiro]] : []));
+  const saiEmp = grupo(ms.filter(m => m.tipo === "saida" && m.escopo === "empresa").map(m => [nomeCat(m), +m.valor])
+    .concat(carregFora ? [["Carregamento pago fora do banco", r2(carregFora)]] : []).concat(motFora.map(m => ["Motorista " + (m.nome || "") + " (fora do banco)", m.valor]))
+    .concat(salario ? [["Seu salário de motorista", salario]] : []));
+  const entPes = grupo(ms.filter(m => m.tipo === "entrada" && m.escopo === "pessoal").map(m => [nomeCat(m), +m.valor]).concat(meus.map(m => ["Salário de motorista (" + m.papel + ")", m.valor])));
+  const saiPes = grupo(ms.filter(m => m.tipo === "saida" && m.escopo === "pessoal").map(m => [nomeCat(m), +m.valor]));
+  const tot = l => r2(l.reduce((s, x) => s + x.v, 0));
+  return { de, ate, salario, viagensMot: meus,
+    empresa: { entrou: tot(entEmp), saiu: tot(saiEmp), liquido: r2(tot(entEmp) - tot(saiEmp)), entradas: entEmp, saidas: saiEmp },
+    pessoal: { entrou: tot(entPes), saiu: tot(saiPes), liquido: r2(tot(entPes) - tot(saiPes)), entradas: entPes, saidas: saiPes },
+    pendentes: rp.pendentes };
+}
+
+const api = { liquido, ganhosMotorista, viagem, milCompra, jaAnotados, definirFornecedores, contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Regras = api;
 })(typeof window !== "undefined" ? window : globalThis);
