@@ -42,9 +42,9 @@ let L = Object.assign({ tab: "inicio", mes: hojeS().slice(0, 7), semana: R.segun
 const salvarLocal = () => gravar("fin-local", L);
 if (!ler("fin-local", null)) salvarLocal(); // guarda a data de início na primeira vez
 let D = vazio();
-function vazio() { return { perfil: null, cats: [], regras: [], pessoas: [], movs: [], cargas: [], admin: {}, fin: {}, ajudantes: [], info: {}, faltas: [], contas: [], cadastro: null, rels: [], viag: [] }; }
+function vazio() { return { perfil: null, cats: [], regras: [], pessoas: [], movs: [], cargas: [], admin: {}, fin: {}, ajudantes: [], info: {}, faltas: [], contas: [], cadastro: null, rels: [], viag: [], presencas: [], lancs: [] }; }
 let liberado = true, msg = "", erro = "", sincronizando = false, ultimaSync = null;
-const ctx = () => ({ cats: D.cats, regras: D.regras, pessoas: D.pessoas, movs: D.movs, cargas: D.cargas, admin: D.admin, fin: D.fin, ajudantes: D.ajudantes, info: D.info, faltas: D.faltas, contas: D.contas, viag: D.viag });
+const ctx = () => ({ cats: D.cats, regras: D.regras, pessoas: D.pessoas, movs: D.movs, cargas: D.cargas, admin: D.admin, fin: D.fin, ajudantes: D.ajudantes, info: D.info, faltas: D.faltas, contas: D.contas, viag: D.viag, presencas: D.presencas, lancamentos: D.lancs });
 const catDe = id => D.cats.find(c => c.id === id);
 const pessoaDe = id => D.pessoas.find(p => p.id === id);
 const cargaDe = id => D.cargas.find(c => c.id === id);
@@ -67,7 +67,9 @@ async function carregar() {
     sb.from("config").select("chave,dados").eq("chave", "cadastro"),
     sb.from("relatorios").select("*").order("numero", { ascending: false }),
     sb.from("profiles").select("*").eq("id", D.perfil.id).single(),
-    sb.from("carga_viagem").select("*")
+    sb.from("carga_viagem").select("*"),
+    sb.from("func_presenca").select("*"),
+    sb.from("func_lancamentos").select("*").order("dia", { ascending: false })
   ]);
   const e = q.slice(0, 14).find(x => x.error);
   if (e) { erro = "Sem conexão com o servidor. Confira a internet."; return false; }
@@ -82,7 +84,10 @@ async function carregar() {
   D.cadastro = q[11].data && q[11].data[0] ? q[11].data[0].dados : null;
   if (D.cadastro) R.definirFornecedores(D.cadastro.fornecedores);
   D.rels = q[12].data || [];
-  D.viag = (q[14] && !q[14].error && q[14].data) || []; // viagens e carregamento anotados no app da Tijolos
+  D.viag = (q[14] && !q[14].error && q[14].data) || [];
+  // presença por turno e o que cada funcionário anotou no Meu Controle (app da Tijolos)
+  const dd = x => ({ ...x, dia: String(x.dia).slice(0, 10) });
+  D.presencas = ((q[15] && !q[15].error && q[15].data) || []).map(dd); D.lancs = ((q[16] && !q[16].error && q[16].data) || []).map(dd); // viagens e carregamento anotados no app da Tijolos
   if (q[13].data) { D.perfil = q[13].data; Aparencia.aplicar(D.perfil.aparencia); }
   D.contas = q[10].data.map(c => ({ ...c, vencimento: String(c.vencimento).slice(0, 10), pago_em: c.pago_em ? String(c.pago_em).slice(0, 10) : null }));
   return true;
@@ -485,6 +490,11 @@ function vPessoas() {
     }).join("");
 }
 
+/* o que o funcionário anotou no Meu Controle × o que está aqui */
+function conferenciaHtml(f, de, ate) {
+  const cf = Equipe.conferir(f, D.lancs, de, ate); if (!cf.length) return "";
+  return '<section class="card"><h2>Ele anotou no Meu Controle</h2>' + cf.map(x => '<div class="row"><span>' + esc(x.nome) + ": ele " + brl(x.ele) + " · aqui " + brl(x.bruno) + "</span>" + (Math.abs(x.dif) < 0.01 ? '<span class="chip green">Igual</span>' : '<span class="chip amber">' + (x.dif > 0 ? "+" : "") + brl(x.dif) + "</span>") + "</div>").join("") + "</section>";
+}
 function vFicha(p) {
   if (!p) { L.pessoa = null; return vPessoas(); }
   const de = L.mes + "-01", ate = fimMes(L.mes) < hojeS() ? fimMes(L.mes) : hojeS();
@@ -495,11 +505,14 @@ function vFicha(p) {
     (p.tipo === "vendedor" ? '<div class="btns"><button class="' + (faltouHoje ? "" : "danger") + '" data-acao="falta" data-p="' + p.id + '" data-dia="' + hoje + '">' + (faltouHoje ? "Desfazer: não atendeu hoje" : "Não atendeu hoje") + "</button></div>" : "") +
     navMes("mes") +
     '<section class="card"><h2>Produziu</h2>' +
-    (p.tipo === "vendedor" ? '<div class="row"><span>Diárias (' + f.diasTrab + " dias)</span><b>" + brl(f.diarias) + "</b></div>" + (f.faltas.length ? '<p class="hint">Não atendeu: ' + f.faltas.sort().map(d => '<button class="small ghost" data-acao="falta" data-p="' + p.id + '" data-dia="' + d + '">' + diaCurto(d) + " ✕</button>").join(" ") + "</p>" : "") +
+    (p.tipo === "vendedor" ? '<div class="row"><span>Diárias (' + String(f.diasTrab).replace(".", ",") + " dias)</span><b>" + brl(f.diarias) + "</b></div>" + (f.faltas.length ? '<p class="hint">Não atendeu: ' + f.faltas.sort().map(d => '<button class="small ghost" data-acao="falta" data-p="' + p.id + '" data-dia="' + d + '">' + diaCurto(d) + " ✕</button>").join(" ") + "</p>" : "") +
       '<div class="row"><span>Vendeu ' + f.vendas.length + " carga(s)</span><span class=\"muted\">" + brl0(f.vendido) + "</span></div>" : "") +
+    (p.tipo === "vendedor" && Object.keys(f.turnos || {}).length ? '<p class="hint">Turnos que ele marcou: ' + Object.keys(f.turnos).sort().map(d => diaCurto(d) + " " + Equipe.TURNOS[f.turnos[d]].nome).join(" · ") + "</p>" : "") +
     f.ajud.map(o => '<div class="row"><span>Ajudante na carga de ' + diaCurto(o.c.data) + "</span><b>" + brl(o.x.valor) + "</b></div>").join("") +
+    (f.carreg || []).map(o => '<div class="row"><span>Carregada · ' + diaCurto(o.dia) + (o.com > 1 ? " (÷" + o.com + ")" : "") + "</span><b>" + brl(o.valor) + "</b></div>").join("") +
     (f.motor || []).map(m => '<div class="row"><span>Motorista na ' + m.papel + " · " + diaCurto(m.dia) + "</span><b>" + brl(m.valor) + "</b></div>").join("") +
     '<div class="row" style="margin-top:8px"><b>Total no mês</b><b>' + brl(f.ganhou) + "</b></div></section>" +
+    conferenciaHtml(f, de, ate) +
     '<section class="card"><h2>Recebeu</h2>' + (f.pix.length ? f.pix.sort((a, b) => msDe(a.quando) - msDe(b.quando)).map(linhaMovHtml).join("") : '<p class="muted">Nenhum Pix neste mês.</p>') + '<div class="row" style="margin-top:8px"><b>Total no mês</b><b>' + brl(f.recebeu) + "</b></div></section>";
 }
 
@@ -1126,7 +1139,7 @@ function recarregarLogo() {
 function ouvirMudancas() {
   if (canal) sb.removeChannel(canal);
   canal = sb.channel("financeiro");
-  ["cargas", "carga_admin", "config", "relatorios", "profiles", "fin_entregas", "fin_carga_ajudantes", "fin_pessoas", "fin_cargas_info", "carga_viagem"].forEach(t => canal.on("postgres_changes", { event: "*", schema: "public", table: t }, recarregarLogo));
+  ["cargas", "carga_admin", "config", "relatorios", "profiles", "fin_entregas", "fin_carga_ajudantes", "fin_pessoas", "fin_cargas_info", "carga_viagem", "func_presenca", "func_lancamentos"].forEach(t => canal.on("postgres_changes", { event: "*", schema: "public", table: t }, recarregarLogo));
   canal.subscribe();
 }
 

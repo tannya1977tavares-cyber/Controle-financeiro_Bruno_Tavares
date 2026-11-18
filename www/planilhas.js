@@ -5,6 +5,7 @@
 (function (raiz) {
 const R = raiz.Regras || (typeof require !== "undefined" ? require("./regras.js") : null);
 const E = raiz.Excel || (typeof require !== "undefined" ? require("./excel.js") : null);
+const EQT = raiz.Equipe || (typeof require !== "undefined" ? require("./equipe.js") : null);
 const { norm, pd, ymd, addDias, r2 } = Object.assign({ r2: v => Math.round(v * 100) / 100 }, R);
 const ref = E.ref, col = E.col;
 
@@ -244,8 +245,11 @@ function eventosDescarga(ctx, p, mes, hoje) {
     const cli = [...new Set(cs.flatMap(c => (c.entregas || []).map(e => e.cliente)).filter(Boolean))]; ev.push({ dia: String(o.c.data).slice(0, 10), carga: (v.junta ? "Viagem (" + v.ids.length + " cargas)" : "Carga") + (o.c.vendedor ? " · " + o.c.vendedor : "") + (cli.length ? " · " + cli.slice(0, 3).join(", ") + (cli.length > 3 ? "…" : "") : ""), descarga: +o.x.valor || 0, vale: 0 }); });
   if (p.tipo === "vendedor" && ini <= ate) {
     const diaria = r2((+p.salario_mes || 0) / 20);
-    R.diasUteis(ini, ate).forEach(d => { const falta = f.faltas.includes(d); ev.push({ dia: d, carga: falta ? "Não atendeu" : "Diária", descarga: falta ? 0 : diaria, vale: 0, falta }); });
+    // turno marcado no Meu Controle: meio turno vale meia diária; "não trabalhei" e falta não valem
+    R.diasUteis(ini, ate).forEach(d => { const falta = f.faltas.includes(d), t = EQT.TURNOS[(f.turnos || {})[d]], peso = falta ? 0 : t ? t.peso : 1;
+      ev.push({ dia: d, carga: falta ? "Não atendeu" : t ? "Diária · " + t.nome : "Diária", descarga: r2(diaria * peso), vale: 0, falta: falta || peso === 0 }); });
   }
+  (f.carreg || []).forEach(o => ev.push({ dia: o.dia, carga: "Carregada" + (o.com > 1 ? " (dividido por " + o.com + ")" : "") + (o.c.vendedor ? " · " + o.c.vendedor : ""), descarga: o.valor, vale: 0 }));
   (f.motor || []).forEach(m => ev.push({ dia: m.dia, carga: "Motorista na " + m.papel + (m.c.vendedor ? " · " + m.c.vendedor : ""), descarga: m.valor, vale: 0 }));
   f.pix.forEach(m => ev.push({ dia: diaMov(m), carga: "Vale · " + (m.banco || "Pix") + (m.obs ? " · " + m.obs : ""), descarga: 0, vale: +m.valor || 0 }));
   ev.sort((x, y) => x.dia.localeCompare(y.dia) || (x.vale ? 1 : 0) - (y.vale ? 1 : 0));
