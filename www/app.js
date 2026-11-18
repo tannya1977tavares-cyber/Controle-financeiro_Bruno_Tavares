@@ -42,9 +42,9 @@ let L = Object.assign({ tab: "inicio", mes: hojeS().slice(0, 7), semana: R.segun
 const salvarLocal = () => gravar("fin-local", L);
 if (!ler("fin-local", null)) salvarLocal(); // guarda a data de início na primeira vez
 let D = vazio();
-function vazio() { return { perfil: null, cats: [], regras: [], pessoas: [], movs: [], cargas: [], admin: {}, fin: {}, ajudantes: [], info: {}, faltas: [], contas: [], cadastro: null, rels: [] }; }
+function vazio() { return { perfil: null, cats: [], regras: [], pessoas: [], movs: [], cargas: [], admin: {}, fin: {}, ajudantes: [], info: {}, faltas: [], contas: [], cadastro: null, rels: [], viag: [] }; }
 let liberado = true, msg = "", erro = "", sincronizando = false, ultimaSync = null;
-const ctx = () => ({ cats: D.cats, regras: D.regras, pessoas: D.pessoas, movs: D.movs, cargas: D.cargas, admin: D.admin, fin: D.fin, ajudantes: D.ajudantes, info: D.info, faltas: D.faltas, contas: D.contas });
+const ctx = () => ({ cats: D.cats, regras: D.regras, pessoas: D.pessoas, movs: D.movs, cargas: D.cargas, admin: D.admin, fin: D.fin, ajudantes: D.ajudantes, info: D.info, faltas: D.faltas, contas: D.contas, viag: D.viag });
 const catDe = id => D.cats.find(c => c.id === id);
 const pessoaDe = id => D.pessoas.find(p => p.id === id);
 const cargaDe = id => D.cargas.find(c => c.id === id);
@@ -66,9 +66,10 @@ async function carregar() {
     sb.from("fin_contas").select("*").order("vencimento"),
     sb.from("config").select("chave,dados").eq("chave", "cadastro"),
     sb.from("relatorios").select("*").order("numero", { ascending: false }),
-    sb.from("profiles").select("*").eq("id", D.perfil.id).single()
+    sb.from("profiles").select("*").eq("id", D.perfil.id).single(),
+    sb.from("carga_viagem").select("*")
   ]);
-  const e = q.find(x => x.error);
+  const e = q.slice(0, 14).find(x => x.error);
   if (e) { erro = "Sem conexão com o servidor. Confira a internet."; return false; }
   erro = "";
   D.cats = q[0].data; D.regras = q[1].data; D.pessoas = q[2].data; D.movs = q[3].data;
@@ -81,6 +82,7 @@ async function carregar() {
   D.cadastro = q[11].data && q[11].data[0] ? q[11].data[0].dados : null;
   if (D.cadastro) R.definirFornecedores(D.cadastro.fornecedores);
   D.rels = q[12].data || [];
+  D.viag = (q[14] && !q[14].error && q[14].data) || []; // viagens e carregamento anotados no app da Tijolos
   if (q[13].data) { D.perfil = q[13].data; Aparencia.aplicar(D.perfil.aparencia); }
   D.contas = q[10].data.map(c => ({ ...c, vencimento: String(c.vencimento).slice(0, 10), pago_em: c.pago_em ? String(c.pago_em).slice(0, 10) : null }));
   return true;
@@ -345,10 +347,15 @@ function perguntaHtml(m) {
     '<div class="btns"><button class="ghost small" data-acao="ignorar" data-id="' + m.id + '">Não contar esse</button></div></div>';
 }
 
-function ajudantesHtml(c) {
-  const ps = D.pessoas.filter(p => p.ativo);
-  return '<div class="card warn" id="aj-' + c.id + '"><h3>Quem foi de ajudante na carga de ' + diaCurto(c.data) + "?</h3><p class=\"muted\">" + esc(c.entregas.map(e => e.cliente || "Sem nome").join(", ")) + "</p>" +
-    (ps.length ? ps.map(p => { const ja = D.ajudantes.find(a => a.carga_id === c.id && a.pessoa_id === p.id); return '<label class="pessoa-linha"><input type="checkbox" data-aj-p="' + p.id + '"' + (ja ? " checked" : "") + '><span class="grow">' + esc(p.nome) + ' <span class="muted">(' + p.tipo + ')</span></span><input class="aj-v" data-aj-v="' + p.id + '" inputmode="decimal" aria-label="Valor de ' + esc(p.nome) + '" value="' + String(ja ? +ja.valor : (+p.valor_carga || 150)).replace(".", ",") + '"></label>'; }).join("") : '<p class="hint">Cadastre os ajudantes na aba Pessoas.</p>') +
+/* ajudantes (descarga): uma vez por viagem. Cargas juntas no mesmo caminhão perguntam uma vez só, na carga principal. */
+const viagemDe = c => R.viagem(ctx(), c);
+const cargasDaViagem = v => v.ids.map(cargaDe).filter(Boolean);
+function ajudantesHtml(c0) {
+  const ps = D.pessoas.filter(p => p.ativo), v = viagemDe(c0), c = cargaDe(v.principal) || c0, ids = new Set(v.ids);
+  const clientes = cargasDaViagem(v).flatMap(x => x.entregas.map(e => e.cliente || "Sem nome"));
+  return '<div class="card warn" id="aj-' + c.id + '"><h3>Quem foi de ajudante ' + (v.junta ? "na viagem de " + diaCurto(c.data) + " (" + v.ids.length + " cargas, uma descarga)" : "na carga de " + diaCurto(c.data)) + "?</h3><p class=\"muted\">" + esc(clientes.join(", ")) + "</p>" +
+    (v.junta && new Set(D.ajudantes.filter(a => ids.has(a.carga_id)).map(a => a.carga_id)).size > 1 ? '<p class="hint" style="color:var(--warn)">Tinha ajudante anotado em mais de uma carga desta viagem. Confira e salve: fica anotado uma vez só.</p>' : "") +
+    (ps.length ? ps.map(p => { const ja = D.ajudantes.find(a => a.carga_id === c.id && a.pessoa_id === p.id) || D.ajudantes.find(a => ids.has(a.carga_id) && a.pessoa_id === p.id); return '<label class="pessoa-linha"><input type="checkbox" data-aj-p="' + p.id + '"' + (ja ? " checked" : "") + '><span class="grow">' + esc(p.nome) + ' <span class="muted">(' + p.tipo + ')</span></span><input class="aj-v" data-aj-v="' + p.id + '" inputmode="decimal" aria-label="Valor de ' + esc(p.nome) + '" value="' + String(ja ? +ja.valor : (+p.valor_carga || 150)).replace(".", ",") + '"></label>'; }).join("") : '<p class="hint">Cadastre os ajudantes na aba Pessoas.</p>') +
     '<p class="hint">O valor já vem do cadastro de cada um (Pessoas). Mude aqui se nessa carga foi diferente: R$ 300 se descarregou sozinho, até R$ 400 com muitas entregas.</p><div class="btns"><button class="pri" data-acao="aj-salvar" data-carga="' + c.id + '">Salvar</button><button data-acao="aj-ninguem" data-carga="' + c.id + '">Ninguém foi</button></div></div>';
 }
 
@@ -420,10 +427,13 @@ function vCargasLista() {
       return '<div class="row"><span class="grow trunc">' + esc(e.cliente || "Sem nome") + ' <span class="muted">· ' + esc(e.medida || "") + "</span></span><span>" + brl0(tot) + "</span> " + chip + "</div>";
     }).join("");
     return '<section class="card"><div class="row"><h3 style="margin:0">' + esc(cap(diaLongo(c.data))) + '</h3><span class="chip">' + esc(c.vendedor || "") + "</span></div>" + '<div style="margin-top:8px">' + ent + "</div>" +
-      '<div class="stats"><div class="stat"><div class="l">Venda</div><div class="v">' + brl0(r.venda) + '</div></div><div class="stat"><div class="l">Tijolo (cerâmica)</div><div class="v neg">' + brl0(r.tijolo) + '</div></div><div class="stat"><div class="l">Gastos da viagem</div><div class="v neg">' + brl0(r.gastosTotal) + '</div></div><div class="stat"><div class="l">Ajudantes</div><div class="v neg">' + brl0(r.ajudTotal) + "</div></div></div>" +
+      '<div class="stats"><div class="stat"><div class="l">Venda</div><div class="v">' + brl0(r.venda) + '</div></div><div class="stat"><div class="l">Tijolo (cerâmica)</div><div class="v neg">' + brl0(r.tijolo) + '</div></div><div class="stat"><div class="l">Gastos da viagem</div><div class="v neg">' + brl0(r.gastosTotal) + '</div></div><div class="stat"><div class="l">Ajudantes</div><div class="v neg">' + brl0(r.ajudTotal) + "</div></div>" +
+        (r.carregamento ? '<div class="stat"><div class="l">Carregamento</div><div class="v neg">' + brl0(r.carregamento) + "</div></div>" : "") + "</div>" +
+      (r.viagem.junta ? '<p class="hint">' + (r.principal ? "Viagem com " + r.viagem.ids.length + " cargas: descarga, abastecimento e carregamento estão todos nesta carga, uma vez só." : "Foi junto na viagem de outra carga deste dia: descarga, abastecimento e carregamento estão lá.") + "</p>" : "") +
+      (r.principal && r.carregamentoInfo ? '<p class="hint">Carregamento: ' + esc(r.carregamentoInfo.fornecedor ? "a cerâmica carregou" : [r.carregamentoInfo.quem ? "carregou " + r.carregamentoInfo.quem : "", r.carregamentoInfo.motorista ? "motorista " + r.carregamentoInfo.motorista : "", +r.carregamentoInfo.valor ? "pago " + brl0(r.carregamentoInfo.valor) + (r.carregamento < +r.carregamentoInfo.valor ? " (o Pix já está nos gastos)" : "") : ""].filter(Boolean).join(", ")) + "</p>" : "") +
       '<div class="row" style="margin-top:8px"><b>Lucro da carga</b><b class="' + (r.lucro >= 0 ? "pos" : "neg") + '" style="font-size:20px">' + brl0(r.lucro) + "</b></div>" +
       (r.gastos.length || r.ajud.length ? "<details><summary class=\"muted\">Ver gastos e ajudantes</summary>" + r.gastos.map(linhaMovHtml).join("") + r.ajud.map(a => '<div class="row"><span>' + esc((pessoaDe(a.pessoa_id) || {}).nome || "?") + ' <span class="muted">ajudante</span></span><span>' + brl0(a.valor) + "</span></div>").join("") + "</details>" : "") +
-      '<div class="btns"><button class="small" data-acao="aj-editar" data-carga="' + c.id + '">Ajudantes</button>' + (relDe(c.id) ? '<button class="small pri" data-acao="rel" data-carga="' + c.id + '">Relatório nº ' + numRel(relDe(c.id)) + " (Excel)</button>" : "") + '</div><p class="hint" id="rm-' + c.id + '"></p></section>';
+      '<div class="btns">' + (r.principal ? '<button class="small" data-acao="aj-editar" data-carga="' + c.id + '">Ajudantes</button>' : "") + (relDe(c.id) ? '<button class="small pri" data-acao="rel" data-carga="' + c.id + '">Relatório nº ' + numRel(relDe(c.id)) + " (Excel)</button>" : "") + '</div><p class="hint" id="rm-' + c.id + '"></p></section>';
   }).join("") : '<p class="muted">Nenhuma carga neste mês.</p>');
 }
 
@@ -503,7 +513,8 @@ const numRel = r => String(r.numero).padStart(4, "0");
 function dadosRelatorio(c) {
   const rel = relDe(c.id), fin = {};
   c.entregas.forEach((e, i) => { if (D.fin[c.id + "|" + i]) fin[i] = D.fin[c.id + "|" + i]; });
-  return RelatorioViagem.dadosDe({ numero: rel ? rel.numero : "", carga: c, custos: (D.admin[c.id] || {}).custos || [], pags: (D.admin[c.id] || {}).pags || [], fin, cadastro: D.cadastro || {}, movs: D.movs, cats: D.cats, ajudantes: D.ajudantes, pessoas: D.pessoas });
+  return RelatorioViagem.dadosDe({ numero: rel ? rel.numero : "", carga: c, custos: (D.admin[c.id] || {}).custos || [], pags: (D.admin[c.id] || {}).pags || [], fin, cadastro: D.cadastro || {}, movs: D.movs, cats: D.cats, ajudantes: D.ajudantes, pessoas: D.pessoas,
+    cargas: D.cargas, vinculos: D.viag, numeroDe: id => (relDe(id) || {}).numero });
 }
 async function abrirRelatorio(cid) {
   const c = cargaDe(cid), el = document.getElementById("rm-" + cid), aviso = t => { if (el) el.textContent = t; };
@@ -603,7 +614,8 @@ function vLev() {
   const cs = D.cargas.filter(c => c.data >= de && c.data <= hoje).sort((a, b) => a.data.localeCompare(b.data));
   const linhaEnt = (c, i) => { const e = c.entregas[i], k = c.id + "|" + i;
     return '<div style="padding:8px 0;border-top:1px solid var(--line)"><div class="row"><span class="grow trunc"><b>' + esc(e.cliente || "Sem nome") + "</b> · " + brl0(R.totalEntrega(e)) + "</span>" + chipEntrega(c, i) + '</div><div class="btns" style="margin-top:6px"><button class="small" data-acao="lev-ent" data-k="' + k + '" data-s="pix_manual">Pix</button><button class="small" data-acao="lev-ent" data-k="' + k + '" data-s="dinheiro">Dinheiro</button><button class="small" data-acao="lev-ent" data-k="' + k + '" data-s="prazo">Dei prazo</button><button class="small" data-acao="lev-ok" data-k="' + k + '" data-s="aberto">Não pagou ainda</button></div><div id="lev-' + k.replace("|", "-") + '"></div></div>'; };
-  const ajud = c => { const ok = D.info[c.id] && D.info[c.id].ajudantes_ok, l = D.ajudantes.filter(a => a.carga_id === c.id);
+  const ajud = c => { const v = viagemDe(c); if (v.principal !== c.id) return '<p class="hint" style="margin-top:8px">Foi junto na viagem de outra carga deste dia: os ajudantes são anotados lá, uma vez só.</p>';
+    const ok = D.info[c.id] && D.info[c.id].ajudantes_ok, l = D.ajudantes.filter(a => v.ids.includes(a.carga_id));
     return ok ? '<div class="row" style="margin-top:8px"><span class="muted">Ajudantes: ' + (l.length ? esc(l.map(a => ((pessoaDe(a.pessoa_id) || {}).nome || "?") + " " + brl0(a.valor)).join(", ")) : "ninguém") + '</span><button class="small" data-acao="aj-editar" data-carga="' + c.id + '">Mudar</button></div>' : ajudantesHtml(c).replace('class="card warn"', 'class="" style="margin-top:10px"'); };
   const mesL = L.levMes, movsMes = D.movs.filter(m => m.tipo === "saida" && !m.ignorado && diaMov(m).slice(0, 7) === mesL).sort((a, b) => msDe(a.quando) - msDe(b.quando));
   const tot = es => movsMes.filter(m => m.escopo === es).reduce((t, m) => t + +m.valor, 0);
@@ -991,15 +1003,16 @@ async function acao(a, ds, alvo) {
     }
     case "prazo-ok": { const [cid, i] = ds.k.split("|"), v = valorDe("pz-" + cid + i); if (!v) return; await situacaoEntrega(cid, +i, "prazo", v); janelaAlertas(); break; }
     case "aj-salvar": case "aj-ninguem": {
-      const cid = ds.carga, box = alvo.closest('[id^="aj-"]') || modal;
+      const cid = ds.carga, box = alvo.closest('[id^="aj-"]') || modal, v = viagemDe(cargaDe(cid) || { id: cid });
       const rows = a === "aj-ninguem" ? [] : [...box.querySelectorAll("[data-aj-p]")].filter(x => x.checked).map(x => ({ carga_id: cid, pessoa_id: x.dataset.ajP, valor: parseValor(box.querySelector('[data-aj-v="' + x.dataset.ajP + '"]').value) || 0 }));
-      await sb.from("fin_carga_ajudantes").delete().eq("carga_id", cid);
+      // a viagem toda fica com os ajudantes anotados uma vez só, na carga principal
+      await sb.from("fin_carga_ajudantes").delete().in("carga_id", v.ids);
       if (rows.length) await sb.from("fin_carga_ajudantes").insert(rows);
-      await sb.from("fin_cargas_info").upsert({ carga_id: cid, ajudantes_ok: true });
-      D.ajudantes = D.ajudantes.filter(x => x.carga_id !== cid).concat(rows); D.info[cid] = { carga_id: cid, ajudantes_ok: true };
+      await sb.from("fin_cargas_info").upsert(v.ids.map(id => ({ carga_id: id, ajudantes_ok: true })));
+      D.ajudantes = D.ajudantes.filter(x => !v.ids.includes(x.carga_id)).concat(rows); v.ids.forEach(id => { D.info[id] = { carga_id: id, ajudantes_ok: true }; });
       fecharJanela(); msg = rows.length ? "Ajudantes anotados." : "Anotado: ninguém foi."; break;
     }
-    case "aj-editar": { const c = cargaDe(ds.carga); if (c) abrirJanela(ajudantesHtml(c).replace('class="card warn"', 'class=""') + '<div class="btns"><button data-acao="fechar">Cancelar</button></div>'); return; }
+    case "aj-editar": { const c = cargaDe(viagemDe(cargaDe(ds.carga) || { id: ds.carga }).principal) || cargaDe(ds.carga); if (c) abrirJanela(ajudantesHtml(c).replace('class="card warn"', 'class=""') + '<div class="btns"><button data-acao="fechar">Cancelar</button></div>'); return; }
     case "falta": {
       const ja = D.faltas.find(f => f.pessoa_id === ds.p && f.dia === ds.dia);
       if (ja) { await sb.from("fin_faltas").delete().eq("pessoa_id", ds.p).eq("dia", ds.dia); D.faltas = D.faltas.filter(f => f !== ja); }
@@ -1089,7 +1102,7 @@ function recarregarLogo() {
 function ouvirMudancas() {
   if (canal) sb.removeChannel(canal);
   canal = sb.channel("financeiro");
-  ["cargas", "carga_admin", "config", "relatorios", "profiles", "fin_entregas", "fin_carga_ajudantes", "fin_pessoas", "fin_cargas_info"].forEach(t => canal.on("postgres_changes", { event: "*", schema: "public", table: t }, recarregarLogo));
+  ["cargas", "carga_admin", "config", "relatorios", "profiles", "fin_entregas", "fin_carga_ajudantes", "fin_pessoas", "fin_cargas_info", "carga_viagem"].forEach(t => canal.on("postgres_changes", { event: "*", schema: "public", table: t }, recarregarLogo));
   canal.subscribe();
 }
 

@@ -240,7 +240,8 @@ function eventosDescarga(ctx, p, mes, hoje) {
   const ini = p.inicio && p.inicio > de ? p.inicio : de;
   const antes = addDias(ini, -1), anterior = p.inicio && antes >= p.inicio ? R.ficha(ctx, p, p.inicio, antes).saldo : 0;
   const f = R.ficha(ctx, p, de, ate), ev = [];
-  f.ajud.forEach(o => { const cli = [...new Set((o.c.entregas || []).map(e => e.cliente).filter(Boolean))]; ev.push({ dia: String(o.c.data).slice(0, 10), carga: "Carga" + (o.c.vendedor ? " · " + o.c.vendedor : "") + (cli.length ? " · " + cli.slice(0, 3).join(", ") + (cli.length > 3 ? "…" : "") : ""), descarga: +o.x.valor || 0, vale: 0 }); });
+  f.ajud.forEach(o => { const v = R.viagem(ctx, o.c), cs = v.ids.map(id => ctx.cargas.find(x => x.id === id)).filter(Boolean);
+    const cli = [...new Set(cs.flatMap(c => (c.entregas || []).map(e => e.cliente)).filter(Boolean))]; ev.push({ dia: String(o.c.data).slice(0, 10), carga: (v.junta ? "Viagem (" + v.ids.length + " cargas)" : "Carga") + (o.c.vendedor ? " · " + o.c.vendedor : "") + (cli.length ? " · " + cli.slice(0, 3).join(", ") + (cli.length > 3 ? "…" : "") : ""), descarga: +o.x.valor || 0, vale: 0 }); });
   if (p.tipo === "vendedor" && ini <= ate) {
     const diaria = r2((+p.salario_mes || 0) / 20);
     R.diasUteis(ini, ate).forEach(d => { const falta = f.faltas.includes(d); ev.push({ dia: d, carga: falta ? "Não atendeu" : "Diária", descarga: falta ? 0 : diaria, vale: 0, falta }); });
@@ -459,7 +460,7 @@ function gastos(ctx, hoje, ano) {
 function linhasForn(ctx, f, hoje) {
   const compras = [];
   f.cargas.forEach(o => { const custos = ((ctx.admin || {})[o.c.id] || {}).custos || [];
-    (o.c.entregas || []).forEach((e, i) => compras.push({ dia: String(o.c.data).slice(0, 10), cliente: e.cliente || "", medida: e.medida || "", mil: +e.mil || 0, preco: +custos[i] || 0, futura: o.futura })); });
+    (o.c.entregas || []).forEach((e, i) => compras.push({ dia: String(o.c.data).slice(0, 10), cliente: e.cliente || "", medida: e.medida || "", mil: R.milCompra(e), preco: +custos[i] || 0, futura: o.futura })); });
   compras.sort((a, b) => a.dia.localeCompare(b.dia));
   const pagos = f.pagos.slice().sort((a, b) => new Date(a.quando) - new Date(b.quando)).map(m => ({ dia: diaMov(m), quem: m.contraparte || "", banco: m.banco || "", obs: m.obs || "", valor: +m.valor || 0 }));
   return { compras, pagos };

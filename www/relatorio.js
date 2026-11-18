@@ -113,19 +113,52 @@
     if (/aliment|refeic|comida/.test(n)) return { linha: 20, tipo: "Gasto", nome: "Alimentação" };
     if (/descarga/.test(n)) return { linha: 18, tipo: "Pagamento", nome: "Descarga" };
     if (/\bvale\b/.test(n)) return { linha: 19, tipo: "Pagamento", nome: "Vale" };
-    if (/carregamento|^carga$/.test(n)) return { linha: 17, tipo: "Pagamento", nome: "Carga" };
+    if (/carregad|carregamento|^carga$/.test(n)) return { linha: 17, tipo: "Pagamento", nome: "Carregamento" };
     return { linha: null, tipo: "Gasto", nome: nomeCategoria || "Outros" };
   }
 
+  /* ---------- viagem: cargas que foram juntas no mesmo caminhão ----------
+     vinculos = linhas de carga_viagem [{carga_id, viagem, carregamento}].
+     Descarga (ajudantes), diesel, pedágio, comida e carregamento são da viagem: contam uma vez só,
+     ligados à carga principal. Carga sem vínculo é uma viagem sozinha. */
+  function viagemDe(cargaId, cargas, vinculos) {
+    const vs = vinculos || [], vivos = new Set((cargas || []).map(c => c.id)), meu = vs.find(v => v.carga_id === cargaId);
+    const chave = meu ? meu.viagem : cargaId;
+    const ids = vs.filter(v => v.viagem === chave && vivos.has(v.carga_id)).map(v => v.carga_id);
+    if (!ids.includes(cargaId)) ids.push(cargaId);
+    const principal = ids.includes(chave) ? chave : ids.slice().sort()[0], lp = vs.find(v => v.carga_id === principal);
+    return { chave, principal, ids, junta: ids.length > 1, carregamento: (lp && lp.carregamento) || null };
+  }
+  /* carregamento: {fornecedor:true} = a cerâmica carregou (sem custo); senão {quem, motorista, valor} */
+  const valorCarregamento = cr => cr && !cr.fornecedor && isFinite(+cr.valor) && +cr.valor > 0 ? r2(+cr.valor) : 0;
+  const ehCarregamento = nome => linhaDoGasto(nome).linha === 17;
+  /* custos da viagem. Se o carregamento também saiu no banco (categoria Carregada ligada à viagem),
+     vale o maior dos dois, nunca a soma. */
+  function custosViagem(v, movs, cats, ajudantes) {
+    const ids = new Set(v.ids), catNome = id => ((cats || []).find(x => x.id === id) || {}).nome || "";
+    const gastos = (movs || []).filter(m => m.tipo === "saida" && !m.ignorado && ids.has(m.carga_id) && !/^compra de tijolo/i.test(catNome(m.categoria_id)));
+    const ajud = (ajudantes || []).filter(a => ids.has(a.carga_id));
+    const soma = l => r2(l.reduce((s, x) => s + (+x.valor || 0), 0));
+    const noBanco = soma(gastos.filter(m => ehCarregamento(catNome(m.categoria_id))));
+    const carregamento = r2(Math.max(0, valorCarregamento(v.carregamento) - noBanco));
+    const totalGastos = soma(gastos), totalAjud = soma(ajud);
+    return { gastos, ajud, totalGastos, totalAjud, carregamento, carregamentoValor: valorCarregamento(v.carregamento), total: r2(totalGastos + totalAjud + carregamento),
+      ajudEmVarias: new Set(ajud.map(a => a.carga_id)).size > 1 };
+  }
+
   const normMedida = s => String(s || "").toLowerCase().replace(/maci[cç]o/g, "").replace(/×/g, "x").replace(/\s+/g, "").replace(/(^|x)0+(\d)/g, "$1$2");
+  const milCompra = it => it.compra != null && isFinite(+it.compra) ? +it.compra : +it.mil || 0;
   const dataBR = s => String(s || "").slice(0, 10).split("-").reverse().join("/");
 
   /*
    dados = {
      numero, data:"AAAA-MM-DD", vendedor, ceramica, rota:[cidades], fiadas, ocupacao (0..1),
-     itens:[{medida, mil, preco, frete, custo}],                      uma por entrega
+     itens:[{medida, mil, preco, frete, custo, compra}],              uma por entrega; compra = milheiros comprados na cerâmica
+                                                                       ("quantidade carregada"; sem ela vale mil)
      clientes:[{nome, tel, endereco, pagamento, forma, total}],
-     ajudantes:[{nome, valor}],                                         o combinado por carga
+     ajudantes:[{nome, valor}],                                         o combinado por viagem (descarga)
+     carregamento:{valor, quem},                                        o que foi pago pra carregar (valor já sem o que saiu no banco)
+     juntoCom,                                                           texto quando a carga foi junto na viagem de outra
      gastos:[{quando:ms, categoria, onde, valor, banco}],                saídas ligadas à carga
      freteRetorno
    }
@@ -138,11 +171,11 @@
     const linhas = []; for (let r = 5; r <= 14; r++) linhas.push({ r, chave: normMedida(pl.texto("B" + r)), usado: false });
     linhas.forEach(l => { if (l.chave === "5x10x20") { l.chave = "5x9x19"; pl.pôr("B" + l.r, "5X9X19"); } });
     const soma = {};
-    dados.itens.forEach(it => { const k = it.medida + "|" + it.preco; (soma[k] = soma[k] || { medida: it.medida, mil: 0, valor: 0, custo: 0 }); soma[k].mil += +it.mil || 0; soma[k].valor += (+it.mil || 0) * (+it.preco || 0); soma[k].custo += (+it.mil || 0) * (+it.custo || 0); });
+    dados.itens.forEach(it => { const k = it.medida + "|" + it.preco; (soma[k] = soma[k] || { medida: it.medida, mil: 0, compra: 0, valor: 0, custo: 0 }); soma[k].mil += +it.mil || 0; soma[k].compra += milCompra(it); soma[k].valor += (+it.mil || 0) * (+it.preco || 0); soma[k].custo += milCompra(it) * (+it.custo || 0); });
     const sobra = [];
     Object.values(soma).forEach(s => { const l = linhas.find(x => !x.usado && x.chave && x.chave === normMedida(s.medida)); if (l) Object.assign(l, { usado: true }, s); else sobra.push(s); });
     const fora = []; let custoFora = 0;
-    sobra.forEach(s => { const l = linhas.filter(x => !x.usado && x.r <= 13).reverse()[0]; if (l) { Object.assign(l, { usado: true }, s); pl.pôr("B" + l.r, s.medida.toUpperCase()); } else { custoFora += s.custo; fora.push(s.medida + ": " + String(r2(s.mil)).replace(".", ",") + " mil, venda " + real(s.valor) + ", compra " + real(s.custo)); } });
+    sobra.forEach(s => { const l = linhas.filter(x => !x.usado && x.r <= 13).reverse()[0]; if (l) { Object.assign(l, { usado: true }, s); pl.pôr("B" + l.r, s.medida.toUpperCase()); } else { custoFora += s.custo; fora.push(s.medida + ": " + String(r2(s.mil)).replace(".", ",") + " mil, venda " + real(s.valor) + ", compra " + real(s.custo) + (r2(s.compra) !== r2(s.mil) ? " (" + String(r2(s.compra)).replace(".", ",") + " mil carregados)" : "")); } });
     pl.pôr("J3", "PAGAMENTO À CERÂMICA: " + (dados.ceramica || ""));
     [["J4", "MEDIDA", "B4"], ["K4", "QUANTIDADE", "C4"], ["L4", "COMPRA MILHEIRO", "D4"], ["M4", "TOTAL PAGO", "E4"]].forEach(([r, t, e]) => pl.pôr(r, t, { estiloDe: e }));
     linhas.forEach(l => {
@@ -152,8 +185,9 @@
       pl.pôr("D" + l.r, l.mil ? l.valor / l.mil : 0, { moeda: true });
       if (l.r <= 13) pl.pôr("E" + l.r, "C" + l.r + "*D" + l.r, { formula: true, moeda: true });
       pl.pôr("J" + l.r, "B" + l.r, { formula: true, estiloDe: "B" + l.r });
-      pl.pôr("K" + l.r, "C" + l.r, { formula: true, estiloDe: "C" + l.r });
-      pl.pôr("L" + l.r, l.mil ? l.custo / l.mil : 0, { moeda: true, estiloDe: "D" + l.r });
+      if (r2(l.compra) === r2(l.mil)) pl.pôr("K" + l.r, "C" + l.r, { formula: true, estiloDe: "C" + l.r });
+      else pl.pôr("K" + l.r, r2(l.compra), { estiloDe: "C" + l.r });
+      pl.pôr("L" + l.r, l.compra ? l.custo / l.compra : 0, { moeda: true, estiloDe: "D" + l.r });
       pl.pôr("M" + l.r, "K" + l.r + "*L" + l.r, { formula: true, moeda: true, estiloDe: "D" + l.r });
     });
     pl.pôr("J15", "TOTAL CERÂMICA", { estiloDe: "B14" });
@@ -167,11 +201,13 @@
       pl.pôr("H" + r, c.pagamento || ""); pl.pôr("H" + (r + 1), c.forma || ""); pl.pôr("H" + (r + 2), c.total, { moeda: true });
     });
     const mais = dados.clientes.slice(3).map(c => c.nome + (c.tel ? " (" + c.tel + ")" : "") + (c.endereco ? ", " + c.endereco : "") + ", " + (c.pagamento || "") + ", " + real(c.total));
-    pl.pôr("B25", [mais.length ? "Mais clientes: " + mais.join("; ") : "", fora.length ? "Outras medidas: " + fora.join("; ") : ""].filter(Boolean).join(" · "));
+    pl.pôr("B25", [dados.juntoCom || "", mais.length ? "Mais clientes: " + mais.join("; ") : "", fora.length ? "Outras medidas: " + fora.join("; ") : ""].filter(Boolean).join(" · "));
 
     // gastos e pagamentos da viagem
     const aj = (dados.ajudantes || []).slice();
     const cel = {}; const add = (ref, v) => { cel[ref] = r2((cel[ref] || 0) + v); };
+    const carr = dados.carregamento && +dados.carregamento.valor > 0 ? dados.carregamento : null;
+    if (carr) add("C17", +carr.valor);
     aj.slice(0, 2).forEach((a, i) => add((i ? "D" : "C") + 17, +a.valor || 0));
     const ajFora = aj.slice(2).reduce((s, a) => s + (+a.valor || 0), 0);
     if (ajFora) add("D17", ajFora);
@@ -207,9 +243,10 @@
     const tot = calcular(dados);
     const linhasAba = [["Data", "Hora", "Tipo", "Categoria", "Onde / quem", "Valor (R$)", "Banco", "Origem"]];
     aj.forEach(a => linhasAba.push([dataBR(dados.data), "", "Pagamento", "Ajudante da carga", a.nome, +a.valor || 0, "", "Combinado"]));
+    if (carr) linhasAba.push([dataBR(dados.data), "", "Pagamento", "Carregamento", [carr.quem, carr.motorista ? "motorista " + carr.motorista : ""].filter(Boolean).join(" · "), +carr.valor, "", "Anotado no app"]);
     lanc.forEach(l => linhasAba.push(l));
     linhasAba.push([], ["", "", "", "Venda de tijolo", "", tot.tijolo], ["", "", "", "Frete cobrado", "", tot.frete], ["", "", "", "Pagamento à cerâmica", "", -tot.ceramica],
-      ["", "", "", "Pagamentos (ajudantes, descarga)", "", -tot.pagamentos], ["", "", "", "Gastos (diesel, comida, pedágio…)", "", -tot.gastos], ["", "", "", "Líquido da carga", "", tot.liquido]);
+      ["", "", "", "Pagamentos (ajudantes, descarga, carregamento)", "", -tot.pagamentos], ["", "", "", "Gastos (diesel, comida, pedágio…)", "", -tot.gastos], ["", "", "", "Líquido da carga", "", tot.liquido]);
     pl.aba("Lançamentos", linhasAba);
     return pl.bytes();
   }
@@ -218,8 +255,8 @@
   function calcular(dados) {
     const tijolo = r2(dados.itens.reduce((s, it) => s + (+it.mil || 0) * (+it.preco || 0), 0));
     const frete = r2(dados.itens.reduce((s, it) => s + (+it.frete || 0), 0));
-    const ceramica = r2(dados.itens.reduce((s, it) => s + (+it.mil || 0) * (+it.custo || 0), 0));
-    let pagamentos = r2((dados.ajudantes || []).reduce((s, a) => s + (+a.valor || 0), 0)), gastos = 0;
+    const ceramica = r2(dados.itens.reduce((s, it) => s + milCompra(it) * (+it.custo || 0), 0));
+    let pagamentos = r2((dados.ajudantes || []).reduce((s, a) => s + (+a.valor || 0), 0) + (dados.carregamento ? +dados.carregamento.valor || 0 : 0)), gastos = 0;
     (dados.gastos || []).forEach(g => { if (linhaDoGasto(g.categoria).tipo === "Pagamento") pagamentos += +g.valor || 0; else gastos += +g.valor || 0; });
     pagamentos = r2(pagamentos); gastos = r2(gastos);
     const bruto = r2(tijolo + frete + (+dados.freteRetorno || 0));
@@ -228,7 +265,8 @@
 
   /* ---------- junta os dados do banco (os dois apps leem as mesmas tabelas) ----------
    fonte = { numero, carga, custos:[], pags:[], fin:{"idx": linha de fin_entregas}, cadastro:{medidas,cidades,fornecedores},
-             movs:[fin_movimentos], cats:[fin_categorias], ajudantes:[fin_carga_ajudantes], pessoas:[fin_pessoas], freteRetorno } */
+             movs:[fin_movimentos], cats:[fin_categorias], ajudantes:[fin_carga_ajudantes], pessoas:[fin_pessoas], freteRetorno,
+             cargas:[todas as cargas], vinculos:[carga_viagem], numeroDe: id => nº do relatório da carga } */
   const ORIGENS = { notificacao: "Notificação do banco", manual: "À mão", extrato: "Extrato", comprovante: "Comprovante" };
   const CENTRO = { 1: { lat: -16.3281, lng: -48.9534 }, 2: { lat: -16.6869, lng: -49.2648 }, 3: { lat: -15.7939, lng: -47.8828 } };
   function dadosDe(f) {
@@ -253,17 +291,22 @@
     const clientes = grupos.map(g => { const e = ents[g.idx[0]];
       return { nome: g.nome, tel: e.tel || "", endereco: [e.endc, e.cidade].filter(Boolean).join(" – "), pagamento: situ(g.idx[0]), forma: e.fpag || "", total: r2(g.idx.reduce((s, i) => s + (+ents[i].mil || 0) * (+ents[i].preco || 0) + (+ents[i].frete || 0), 0)) }; });
     const catNome = id => ((f.cats || []).find(x => x.id === id) || {}).nome || "";
-    const gastos = (f.movs || []).filter(m => m.tipo === "saida" && !m.ignorado && m.carga_id === c.id && !/^compra de tijolo/i.test(catNome(m.categoria_id)))
+    const v = viagemDe(c.id, f.cargas || [c], f.vinculos), principal = v.principal === c.id, cv = custosViagem(v, f.movs, f.cats, f.ajudantes);
+    const gastos = (principal ? cv.gastos : [])
       .map(m => ({ quando: new Date(m.quando).getTime(), categoria: catNome(m.categoria_id) || "Outros", onde: m.contraparte || m.texto || "", valor: +m.valor || 0, banco: m.banco || "", origem: ORIGENS[m.origem] || m.origem || "" }));
     const pessoa = id => (f.pessoas || []).find(p => p.id === id) || {};
-    const ajudantes = (f.ajudantes || []).filter(a => a.carga_id === c.id).map(a => ({ nome: pessoa(a.pessoa_id).nome || "Ajudante", valor: +a.valor || 0 }));
+    const ajudantes = (principal ? cv.ajud : []).map(a => ({ nome: pessoa(a.pessoa_id).nome || "Ajudante", valor: +a.valor || 0 }));
     const forn = (cad.fornecedores || []).find(x => x.id === c.ceramica);
     return { numero: f.numero, data: String(c.data).slice(0, 10), vendedor: c.vendedor, ceramica: forn ? forn.nome : (c.ceramica === "anapolina" ? "Cerâmica Anapolina" : "Outra cerâmica"),
-      rota, fiadas, ocupacao, itens: ents.map((e, i) => ({ medida: e.medida, mil: +e.mil || 0, preco: +e.preco || 0, frete: +e.frete || 0, custo: +(f.custos || [])[i] || 0 })),
-      clientes, ajudantes, gastos, freteRetorno: +f.freteRetorno || 0 };
+      rota, fiadas, ocupacao, itens: ents.map((e, i) => ({ medida: e.medida, mil: +e.mil || 0, preco: +e.preco || 0, frete: +e.frete || 0, custo: +(f.custos || [])[i] || 0,
+        compra: e.carregado && e.carregado.mil != null && isFinite(+e.carregado.mil) ? +e.carregado.mil : +e.mil || 0 })),
+      clientes, ajudantes, gastos, freteRetorno: +f.freteRetorno || 0,
+      carregamento: principal && cv.carregamento ? { valor: cv.carregamento, quem: (v.carregamento || {}).quem || "", motorista: (v.carregamento || {}).motorista || "" } : null,
+      juntoCom: v.junta ? (principal ? "Viagem com " + v.ids.length + " cargas: descarga, carregamento e gastos estão todos neste relatório."
+        : "Foi junto na viagem da carga principal" + (f.numeroDe && f.numeroDe(v.principal) ? " (relatório nº " + String(f.numeroDe(v.principal)).padStart(4, "0") + ")" : "") + ": descarga, carregamento e gastos estão lá.") : "" };
   }
 
   const nomeArquivo = d => "Relatorio de Viagem " + String(d.numero || "").padStart(4, "0") + " - " + dataBR(d.data).replace(/\//g, "-") + ".xlsx";
-  const api = { montar, calcular, dadosDe, linhaDoGasto, nomeArquivo, zipar };
+  const api = { montar, calcular, dadosDe, linhaDoGasto, nomeArquivo, zipar, viagemDe, custosViagem, valorCarregamento };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.RelatorioViagem = api;
 })(typeof window !== "undefined" ? window : globalThis);

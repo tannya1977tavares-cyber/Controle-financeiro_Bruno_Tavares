@@ -119,3 +119,21 @@ console.log("extrato: tudo certo");
   assert.deepStrictEqual([cal["2026-11-05"].cargas.length, cal["2026-11-05"].gPes.length, cal["2026-11-10"].contas.length], [1, 1, 1]);
   console.log("contas e calendário: tudo certo");
 }
+/* viagem: duas cargas no mesmo dia juntas = uma descarga, diesel na principal, lucro sem duplicar */
+{
+  const cx = JSON.parse(JSON.stringify(ctx)); cx.regras = []; cx.movs = []; cx.info = {};
+  cx.cargas = [{ id: "v1", data: "2026-11-20", vendedor: "Bruno", entregas: [{ cliente: "A", mil: 5, preco: 900, carregado: { mil: 4 } }] }, { id: "v2", data: "2026-11-20", vendedor: "Bruno", entregas: [{ cliente: "B", mil: 3, preco: 900 }] }];
+  cx.admin = { v1: { custos: [600] }, v2: { custos: [600] } };
+  cx.viag = [{ carga_id: "v2", viagem: "v2", carregamento: { quem: "Zé", valor: 120 } }, { carga_id: "v1", viagem: "v2" }];
+  const sem = R.cargasSemAjudante(cx, "2026-11-21"); assert.deepStrictEqual(sem.map(c => c.id), ["v2"]);
+  const d = R.classificar({ tipo: "saida", contraparte: "AUTO POSTO TREVO", valor: 700, quando: ms("2026-11-20", 7), origem: "notificacao" }, cx);
+  assert.strictEqual(d.carga_id, "v2");
+  cx.movs.push(Object.assign({ id: "m1", tipo: "saida", valor: 700, quando: ms("2026-11-20", 7) }, d));
+  cx.ajudantes = [{ carga_id: "v2", pessoa_id: "p1", valor: 300 }];
+  const r1 = R.resumoCarga(cx, cx.cargas[0]), r2_ = R.resumoCarga(cx, cx.cargas[1]);
+  assert.deepStrictEqual([r1.tijolo, r1.lucro, r1.principal], [2400, 2100, false]); // tijolo pela quantidade carregada, sem custos da viagem
+  assert.deepStrictEqual([r2_.gastosTotal, r2_.ajudTotal, r2_.carregamento, r2_.lucro], [700, 300, 120, 2700 - 1800 - 1120]);
+  const per = R.resumoPeriodo(cx, "2026-11-20", "2026-11-20");
+  assert.strictEqual(per.cargas.reduce((s, x) => s + x.r.lucro, 0), 7200 - 2400 - 1800 - 1120);
+  console.log("viagem: tudo certo");
+}
