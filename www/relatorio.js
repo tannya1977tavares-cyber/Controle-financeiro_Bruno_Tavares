@@ -148,9 +148,17 @@
      vale o maior dos dois, nunca a soma. */
   function custosViagem(v, movs, cats, ajudantes) {
     const ids = new Set(v.ids), catNome = id => ((cats || []).find(x => x.id === id) || {}).nome || "";
-    const gastos = (movs || []).filter(m => m.tipo === "saida" && !m.ignorado && ids.has(m.carga_id) && !/^compra de tijolo/i.test(catNome(m.categoria_id)));
     const ajud = (ajudantes || []).filter(a => ids.has(a.carga_id));
     const soma = l => r2(l.reduce((s, x) => s + (+x.valor || 0), 0));
+    let gastos = (movs || []).filter(m => m.tipo === "saida" && !m.ignorado && ids.has(m.carga_id) && !/^compra de tijolo/i.test(catNome(m.categoria_id)));
+    /* descarga: quem descarregou já está anotado (ajudantes). O Pix da descarga ligado à viagem é o pagamento disso,
+       então não soma de novo; só o que passar do combinado entra como gasto. */
+    const descBanco = gastos.filter(m => /^descarga/i.test(catNome(m.categoria_id)));
+    if (ajud.length && descBanco.length) {
+      const extra = r2(soma(descBanco) - soma(ajud));
+      gastos = gastos.filter(m => !descBanco.includes(m));
+      if (extra > 0) gastos.push(Object.assign({}, descBanco[0], { valor: extra, obs: "Descarga acima do combinado com os ajudantes" }));
+    }
     const noBanco = soma(gastos.filter(m => ehCarregamento(catNome(m.categoria_id))));
     const carregamento = r2(Math.max(0, valorCarregamento(v.carregamento) - noBanco));
     const totalGastos = soma(gastos), totalAjud = soma(ajud), mot = motoristas(v.carregamento), totalMotorista = soma(mot);

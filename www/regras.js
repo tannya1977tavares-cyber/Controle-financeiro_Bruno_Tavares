@@ -126,6 +126,14 @@ function pagoEntrega(ctx, cid, i) {
   return r2(ctx.movs.filter(m => m.tipo === "entrada" && !m.ignorado && m.carga_id === cid && m.entrega_idx === i).reduce((s, m) => s + +m.valor, 0));
 }
 function situacao(ctx, cid, i) { return (ctx.fin || {})[cid + "|" + i] || null; }
+/* recebido fora do banco (dinheiro ou Pix anotado à mão): o valor digitado, ou o que falta depois dos Pix já ligados.
+   Assim, se o Pix cair depois de marcar "dinheiro", o mesmo pagamento não conta duas vezes. */
+function valorFora(ctx, cid, i) {
+  const s = situacao(ctx, cid, i); if (!s || !FORA.includes(s.situacao)) return 0;
+  const c = ctx.cargas.find(x => x.id === cid), e = c && c.entregas[+i]; if (!e) return 0;
+  if (s.valor != null && isFinite(+s.valor) && +s.valor > 0) return r2(+s.valor);
+  return r2(Math.max(0, totalEntrega(e) - pagoEntrega(ctx, cid, +i)));
+}
 
 function entregasAbertas(ctx) {
   const out = [];
@@ -231,7 +239,7 @@ function resumoCarga(ctx, c) {
   (c.entregas || []).forEach((e, i) => {
     venda += totalEntrega(e); tijolo += (+custos[i] || 0) * milCompra(e);
     const s = situacao(ctx, c.id, i);
-    recebido += s && FORA.includes(s.situacao) ? totalEntrega(e) : pagoEntrega(ctx, c.id, i);
+    recebido += pagoEntrega(ctx, c.id, i) + (s && FORA.includes(s.situacao) ? valorFora(ctx, c.id, i) : 0);
   });
   // custos da viagem (gastos, ajudantes/descarga, carregamento) ficam só na carga principal: somando as cargas, nada duplica
   const v = viagem(ctx, c), principal = v.principal === c.id;
@@ -324,10 +332,22 @@ function calendario(ctx, de, ate) {
   Object.entries(ctx.fin || {}).forEach(([key, s]) => {
     if (!FORA.includes(s.situacao) || !s.pago_em || s.pago_em < de || s.pago_em > ate) return;
     const [cid, i] = key.split("|"), c = ctx.cargas.find(x => x.id === cid);
-    if (c && c.entregas[+i]) d(s.pago_em).dinheiro.push({ c, i: +i, e: c.entregas[+i], valor: totalEntrega(c.entregas[+i]), situacao: s.situacao });
+    const v = valorFora(ctx, cid, +i); if (c && c.entregas[+i] && v > 0) d(s.pago_em).dinheiro.push({ c, i: +i, e: c.entregas[+i], valor: v, situacao: s.situacao, s });
   });
   (ctx.contas || []).forEach(c => { if (c.vencimento >= de && c.vencimento <= ate) d(c.vencimento).contas.push(c); });
   return dias;
+}
+
+/* recebimentos fora do banco (dinheiro / Pix anotado), um por entrega, pra lista de Movimentos */
+function recebidosFora(ctx) {
+  const out = [];
+  Object.entries(ctx.fin || {}).forEach(([key, s]) => {
+    if (!FORA.includes(s.situacao) || !s.pago_em) return;
+    const [cid, i] = key.split("|"), c = ctx.cargas.find(x => x.id === cid);
+    if (!c || !c.entregas[+i]) return;
+    out.push({ c, i: +i, e: c.entregas[+i], s, dia: String(s.pago_em).slice(0, 10), valor: valorFora(ctx, cid, +i), total: totalEntrega(c.entregas[+i]), pix: pagoEntrega(ctx, cid, +i) });
+  });
+  return out;
 }
 
 /* ---------- semana ---------- */
@@ -341,7 +361,7 @@ function resumoPeriodo(ctx, de, ate) {
     return Object.entries(g).map(([nome, v]) => ({ nome, v: r2(v) })).sort((a, b) => b.v - a.v);
   };
   const dinheiro = r2(Object.entries(ctx.fin || {}).filter(([k, s]) => FORA.includes(s.situacao) && s.pago_em >= de && s.pago_em <= ate).reduce((t, [k]) => {
-    const [cid, i] = k.split("|"); const c = ctx.cargas.find(x => x.id === cid); return t + (c && c.entregas[+i] ? totalEntrega(c.entregas[+i]) : 0);
+    const [cid, i] = k.split("|"); return t + valorFora(ctx, cid, +i);
   }, 0));
   const entEmp = soma(ms.filter(m => m.tipo === "entrada" && m.escopo === "empresa")) + dinheiro;
   const entPes = soma(ms.filter(m => m.tipo === "entrada" && m.escopo === "pessoal"));
@@ -381,6 +401,6 @@ function liquido(ctx, de, ate, eu) {
     pendentes: rp.pendentes };
 }
 
-const api = { liquido, ganhosMotorista, viagem, milCompra, jaAnotados, definirFornecedores, contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
+const api = { valorFora, recebidosFora, liquido, ganhosMotorista, viagem, milCompra, jaAnotados, definirFornecedores, contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Regras = api;
 })(typeof window !== "undefined" ? window : globalThis);
