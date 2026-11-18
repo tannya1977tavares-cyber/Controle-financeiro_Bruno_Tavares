@@ -45,7 +45,7 @@
   /* ficha: de/ate = período (AAAA-MM-DD). O saldo usa tudo desde o início da pessoa.
      ctx = { cargas, viag, ajudantes, faltas, presencas, movs } */
   function ficha(ctx, p, de, ate) {
-    const calc = (a, b) => {
+    const calc = (a, b, tudo) => {
       const ini = p.inicio && a < dia(p.inicio) ? dia(p.inicio) : a;
       const ajud = (ctx.ajudantes || []).filter(x => x.pessoa_id === p.id).map(x => ({ x, c: (ctx.cargas || []).find(c => c.id === x.carga_id) }))
         .filter(o => o.c && dia(o.c.data) >= ini && dia(o.c.data) <= b);
@@ -66,16 +66,19 @@
       const carreg = []; vs.forEach(o => { const cr = o.cr, quem = RV.carregadores(cr), v = RV.valorCarregamento(cr);
         if (v && quem.some(n => mesmoNome(n, p.nome))) carreg.push({ c: o.c, dia: o.dia, com: quem.length, valor: r2(v / quem.length) }); });
       const ganhoCarreg = carreg.reduce((s, x) => s + x.valor, 0);
-      const pix = (ctx.movs || []).filter(m => m.tipo === "saida" && !m.ignorado && m.pessoa_id === p.id && diaMov(m) >= ini && diaMov(m) <= b);
+      /* vale antigo (pego antes do sistema): entra no saldo geral mesmo sendo de antes do início, como dívida dele */
+      const ehVale = m => m.origem === "vale";
+      const pix = (ctx.movs || []).filter(m => m.tipo === "saida" && !m.ignorado && m.pessoa_id === p.id && diaMov(m) <= b && (diaMov(m) >= ini || (tudo && ehVale(m))));
+      const vales = pix.filter(ehVale);
       const recebeu = pix.reduce((s, m) => s + +m.valor, 0);
       const vendas = p.tipo === "vendedor" ? (ctx.cargas || []).filter(c => norm(c.vendedor) === norm(p.nome) && dia(c.data) >= ini && dia(c.data) <= b) : [];
       return { ajud, ganhoAjud: r2(ganhoAjud), motor, ganhoMot: r2(ganhoMot), carreg, ganhoCarreg: r2(ganhoCarreg), dias, turnos, diasTrab, faltas, diarias: r2(diarias),
-        ganhou: r2(ganhoAjud + diarias + ganhoMot + ganhoCarreg), pix, recebeu: r2(recebeu), vendas,
+        ganhou: r2(ganhoAjud + diarias + ganhoMot + ganhoCarreg), pix, recebeu: r2(recebeu), vales, totalVales: r2(vales.reduce((s, m) => s + +m.valor, 0)), vendas,
         vendido: r2(vendas.reduce((s, c) => s + (c.entregas || []).reduce((t, e) => t + totalEntrega(e), 0), 0)) };
     };
-    const periodo = calc(de, ate), geral = calc(p.inicio ? dia(p.inicio) : de, ate);
+    const periodo = calc(de, ate), geral = calc(p.inicio ? dia(p.inicio) : de, ate, true);
     // saldo > 0: o Bruno deve pra ele; saldo < 0: ele recebeu adiantado (está devendo)
-    return Object.assign(periodo, { saldo: r2(geral.ganhou - geral.recebeu) });
+    return Object.assign(periodo, { saldo: r2(geral.ganhou - geral.recebeu), valesAntigos: geral.vales, totalValesAntigos: geral.totalVales });
   }
 
   /* o que ele anotou × o que está no controle do Bruno, por tipo de serviço */

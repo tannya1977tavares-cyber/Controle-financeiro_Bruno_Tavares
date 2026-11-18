@@ -157,3 +157,18 @@ console.log("extrato: tudo certo");
   assert.strictEqual(f.ganhoMot, 80);
   console.log("lucro líquido e motorista: tudo certo");
 }
+
+/* dinheiro + Pix na mesma entrega não conta duas vezes; valor digitado manda */
+{
+  const cx = { cats: [], regras: [], pessoas: [], contas: [], ajudantes: [], info: {}, admin: {}, viag: [],
+    cargas: [{ id: "k1", data: "2026-11-16", entregas: [{ mil: 10, preco: 826, frete: 0 }] }],
+    movs: [{ id: "p1", tipo: "entrada", valor: 8200, carga_id: "k1", entrega_idx: 0, escopo: "empresa", quando: "2026-11-16T12:34:00Z" }],
+    fin: { "k1|0": { situacao: "pix_manual", pago_em: "2026-11-17" } } };
+  assert.strictEqual(R.valorFora(cx, "k1", 0), 60);
+  assert.strictEqual(R.resumoPeriodo(cx, "2026-11-16", "2026-11-22").dinheiro, 60);
+  assert.strictEqual(R.resumoCarga(cx, cx.cargas[0]).recebido, 8260);
+  cx.fin["k1|0"].valor = 100;
+  assert.strictEqual(R.valorFora(cx, "k1", 0), 100);
+  assert.strictEqual(R.recebidosFora(cx)[0].valor, 100);
+  console.log("dinheiro sem duplicar: tudo certo");
+}

@@ -75,3 +75,16 @@ console.log("quantidade carregada: tudo certo");
   assert.deepStrictEqual([cv2.carregamento, cv2.totalMotorista], [0, 100]);
   console.log("motorista e carregadores: tudo certo");
 }
+
+/* Pix da descarga ligado à viagem não soma de novo com os ajudantes anotados */
+{
+  const RV2 = require("../www/relatorio.js");
+  const cats = [{ id: "d", nome: "Descarga" }, { id: "g", nome: "Combustível (diesel)" }];
+  const v = { ids: ["x"], principal: "x", carregamento: null };
+  const movs = [{ tipo: "saida", valor: 300, carga_id: "x", categoria_id: "d" }, { tipo: "saida", valor: 500, carga_id: "x", categoria_id: "g" }];
+  const aj = [{ carga_id: "x", pessoa_id: "a", valor: 150 }, { carga_id: "x", pessoa_id: "b", valor: 150 }];
+  assert.strictEqual(RV2.custosViagem(v, movs, cats, aj).total, 800);
+  assert.strictEqual(RV2.custosViagem(v, movs.concat([{ tipo: "saida", valor: 50, carga_id: "x", categoria_id: "d" }]), cats, aj).total, 850);
+  assert.strictEqual(RV2.custosViagem(v, movs, cats, []).total, 800);
+  console.log("descarga sem duplicar: tudo certo");
+}

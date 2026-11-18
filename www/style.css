@@ -125,3 +125,4 @@ button.liq.neg{background:var(--danger-soft)}
 .liq-t{font-weight:700;color:var(--ink,inherit);font-size:calc(15px*var(--fs,1))}
 .liq-v{font-family:var(--display);font-weight:700;font-size:calc(34px*var(--fs,1));line-height:1.1}
 .liq-s{font-size:calc(13px*var(--fs,1));color:var(--muted)}
+.mv{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}

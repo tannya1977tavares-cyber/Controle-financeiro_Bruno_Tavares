@@ -26,4 +26,10 @@ const rs = E.resumoSemana(ctx, fab, "2026-11-16", "2026-11-22");
 assert.ok(/Ganhou na semana: R\$\s?310,00/.test(rs.texto) && /te deve R\$\s?60,00/.test(rs.texto) && /Diferença/.test(rs.texto), rs.texto);
 assert.deepStrictEqual(E.semana("2026-11-20"), { de: "2026-11-16", ate: "2026-11-22" });
 assert.deepStrictEqual(E.semana("2026-11-22"), { de: "2026-11-16", ate: "2026-11-22" });
+// vale antigo (antes do início): não entra no mês, mas entra no saldo geral como dívida
+{
+  const cv = Object.assign({}, ctx, { movs: ctx.movs.concat([{ origem: "vale", tipo: "saida", valor: 500, pessoa_id: "f", quando: q("2026-09-10") }, { tipo: "saida", valor: 70, pessoa_id: "f", quando: q("2026-09-11") }]) });
+  const fv2 = E.ficha(cv, fab, "2026-11-16", "2026-11-22");
+  assert.deepStrictEqual([fv2.recebeu, fv2.saldo, fv2.totalValesAntigos, fv2.valesAntigos.length], [250, -440, 500, 1]); // o Pix comum de setembro (antes do início) segue fora
+}
 console.log("equipe: tudo certo");

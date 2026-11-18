@@ -25,6 +25,7 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const parseValor = s => { s = String(s).trim(); const v = parseFloat(/,/.test(s) ? s.replace(/\./g, "").replace(",", ".") : s); return isFinite(v) ? v : NaN; };
 const ymd = R.ymd, pd = R.pd, addDias = R.addDias;
 const hojeS = () => ymd(new Date());
+const r2 = v => Math.round(v * 100) / 100;
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 const diaCurto = s => pd(s).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 const diaLongo = s => pd(s).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "2-digit" });
@@ -52,6 +53,7 @@ const main = document.getElementById("main"), modal = document.getElementById("m
 
 /* ---------- banco de dados ---------- */
 async function carregar() {
+  if (!D.perfil) return false;
   const q = await Promise.all([
     sb.from("fin_categorias").select("*").order("ordem"),
     sb.from("fin_regras").select("*"),
@@ -64,7 +66,7 @@ async function carregar() {
     sb.from("fin_cargas_info").select("*"),
     sb.from("fin_faltas").select("*"),
     sb.from("fin_contas").select("*").order("vencimento"),
-    sb.from("config").select("chave,dados").eq("chave", "cadastro"),
+    sb.from("config").select("chave,dados").in("chave", ["cadastro", "custos"]),
     sb.from("relatorios").select("*").order("numero", { ascending: false }),
     sb.from("profiles").select("*").eq("id", D.perfil.id).single(),
     sb.from("carga_viagem").select("*"),
@@ -72,16 +74,19 @@ async function carregar() {
     sb.from("func_lancamentos").select("*").order("dia", { ascending: false })
   ]);
   const e = q.slice(0, 14).find(x => x.error);
-  if (e) { erro = "Sem conexão com o servidor. Confira a internet."; return false; }
+  if (e) { if (q.some(x => x.error && ehErroSessao(x.error))) { await sessaoCaiu(); return false; } erro = "Sem conexão com o servidor. Confira a internet."; return false; }
   erro = "";
-  D.cats = q[0].data; D.regras = q[1].data; D.pessoas = q[2].data; D.movs = q[3].data;
+  D.cats = q[0].data; D.regras = q[1].data; D.pessoas = q[2].data;
+  { const vistos = new Set(); D.movs = q[3].data.filter(m => !vistos.has(m.chave) && vistos.add(m.chave)); }
   D.cargas = q[4].data.map(c => ({ ...c, data: String(c.data).slice(0, 10), entregas: c.entregas || [] }));
   D.admin = {}; q[5].data.forEach(a => { D.admin[a.carga_id] = a; });
+  completarCustos(((q[11].data || []).find(x => x.chave === "custos") || {}).dados || null);
   D.fin = {}; q[6].data.forEach(f => { D.fin[f.carga_id + "|" + f.idx] = f; });
   D.ajudantes = q[7].data;
   D.info = {}; q[8].data.forEach(i => { D.info[i.carga_id] = i; });
   D.faltas = q[9].data.map(f => ({ ...f, dia: String(f.dia).slice(0, 10) }));
-  D.cadastro = q[11].data && q[11].data[0] ? q[11].data[0].dados : null;
+  const cfgDe = k => ((q[11].data || []).find(x => x.chave === k) || {}).dados || null;
+  D.cadastro = cfgDe("cadastro"); D.custosCfg = cfgDe("custos");
   if (D.cadastro) R.definirFornecedores(D.cadastro.fornecedores);
   D.rels = q[12].data || [];
   D.viag = (q[14] && !q[14].error && q[14].data) || [];
@@ -93,13 +98,43 @@ async function carregar() {
   return true;
 }
 
+/* preço de custo de cada entrega: o guardado na carga; se ficou zerado, o preço atual da cerâmica
+   (ou da tabela da região), igual o app da Tijolos faz. Assim a conta do fornecedor bate com a de lá. */
+function completarCustos(C) {
+  D.cargas.forEach(c => {
+    const a = D.admin[c.id] = D.admin[c.id] || { carga_id: c.id, custos: [], pags: [] };
+    const custos = (a.custos || []).slice();
+    c.entregas.forEach((e, i) => {
+      if (+custos[i] > 0 || !C) return;
+      const p = (C[c.ceramica] || {})[e.medida], r = (C.regiao || {})[e.medida];
+      const v = p != null ? +p : r != null ? +r : 0;
+      if (v > 0) custos[i] = v;
+    });
+    a.custos = custos;
+  });
+}
+
+/* ---------- sessão: se o login cair (ex.: saiu no outro app), pede pra entrar de novo em vez de seguir sem salvar ---------- */
+const ehErroSessao = e => !!e && (e.status === 401 || /jwt|token|not authenticated|permission denied/i.test(String(e.message || e.code || "")) || e.code === "42501" || e.code === "PGRST301");
+async function sessaoCaiu() {
+  if (!D.perfil) return;
+  D = vazio(); fecharJanela();
+  try { await sb.auth.signOut({ scope: "local" }); } catch (x) {}
+  erro = "Seu acesso saiu (você saiu da conta em outro app ou celular). Entre de novo: nada do que estava esperando vai ser lançado duas vezes.";
+  render();
+}
+sb.auth.onAuthStateChange((ev, sess) => { if (ev === "SIGNED_OUT" && D.perfil) sessaoCaiu(); });
+
 function linhaMov(m, origem) {
   return { chave: m.chave, origem, quando: new Date(m.quando).toISOString(), tipo: m.tipo, valor: m.valor, contraparte: m.contraparte || "", texto: (m.texto || "").slice(0, 500), banco: m.banco || "Nubank" };
 }
 
 async function inserirMovs(lista) {
   // classifica um por um (cada um entra no contexto do próximo) e grava
-  const novos = [], faturas = [];
+  const novos = [], faturas = [], base = D.movs, ja = new Set(base.map(m => m.chave));
+  lista = lista.filter((m, k) => m.chave && !ja.has(m.chave) && lista.findIndex(x => x.chave === m.chave) === k);
+  D.movs = base.slice(); // os provisórios só valem pra classificar; se não salvar, somem
+  try {
   for (const m0 of lista) {
     if (m0.tipo === "fatura") { faturas.push(m0); continue; }
     const pagFat = m0.tipo === "pagfatura", m = pagFat ? Object.assign({}, m0, { tipo: "saida" }) : m0;
@@ -108,14 +143,15 @@ async function inserirMovs(lista) {
     novos.push(row);
     D.movs.push(Object.assign({ id: "tmp" + novos.length }, row));
   }
+  } finally { D.movs = base; }
   for (const f of faturas) {
     const dia = R.diaDe(f.quando);
     const r0 = await sb.from("fin_contas").upsert({ chave: "fat|" + f.chave, descricao: "Fatura do cartão " + (f.banco || ""), tipo: "cartao", valor: f.valor, vencimento: f.vencimento || addDias(dia, 10), banco: f.banco || null }, { onConflict: "chave", ignoreDuplicates: true });
-    if (r0.error) return { ok: false };
+    if (r0.error) { if (ehErroSessao(r0.error)) await sessaoCaiu(); return { ok: false }; }
   }
   if (!novos.length) { if (faturas.length) await carregar(); return { ok: true, n: 0 }; }
   const r = await sb.from("fin_movimentos").upsert(novos, { onConflict: "chave", ignoreDuplicates: true }).select();
-  if (r.error) return { ok: false };
+  if (r.error) { if (ehErroSessao(r.error)) await sessaoCaiu(); return { ok: false }; }
   if (faturas.length) await carregar();
   for (const m of r.data || []) {
     if (m.tipo !== "saida" || m.pendente) continue;
@@ -141,11 +177,13 @@ async function sincronizar(silencioso) {
       (itens || []).forEach(a => { const m = LE.lerAviso(a); if (m) lidos.push(Object.assign(m, { chave: "not|" + a.chave, origem: "notificacao" })); });
       lidos.sort((a, b) => a.quando - b.quando);
       const r = await inserirMovs(lidos);
+      if (!D.perfil) { sincronizando = false; render(); return; }
       if (r.ok) await Avisos.apagar({ chaves: (itens || []).map(a => a.chave) });
       else if (!silencioso) erro = "Não deu pra mandar os avisos dos bancos. Tento de novo depois.";
     }
-    await carregar();
+    if (!(await carregar())) { sincronizando = false; render(); return; }
     ultimaSync = new Date();
+    if (!silencioso) ouvirMudancas(); // religa a sincronia ao vivo com o app da Tijolos
     await agendarLembretes();
   } catch (e) { if (!silencioso) erro = "Não deu pra atualizar. Confira a internet."; }
   sincronizando = false; render();
@@ -219,6 +257,7 @@ function janelaComprovante(it) {
   if (c.aPagar) acoes = '<p class="muted">Esse boleto ainda não foi pago. Guardo em Contas e te lembro no vencimento.</p><div class="btns"><button class="pri" data-acao="comp-conta">Guardar em Contas</button><button data-acao="comp-lancar">Já paguei, lançar gasto</button><button data-acao="comp-prox">Cancelar</button></div>';
   else if (ja) acoes = '<div class="card warn" style="margin:8px 0"><b>Parece que já está anotado:</b><br>' + esc(diaCurto(R.diaDe(msDe(ja.quando)))) + " · " + esc(ja.contraparte || "sem nome") + " · " + brl(ja.valor) + '</div><div class="btns"><button class="pri" data-acao="comp-mesmo" data-id="' + ja.id + '">É o mesmo, completar o nome</button><button data-acao="comp-lancar">É outro, lançar</button><button data-acao="comp-prox">Cancelar</button></div>';
   else acoes = '<div class="btns"><button class="pri" data-acao="comp-lancar">Lançar</button><button data-acao="comp-prox">Cancelar</button></div>';
+  if (!c.aPagar && D.pessoas.length) acoes += '<div class="btns"><button class="ghost small" data-acao="comp-vale">É vale antigo de alguém da equipe</button></div>';
   abrirJanela("<h2>Comprovante lido" + (c.banco ? ' <span class="chip">' + esc(c.banco) + "</span>" : "") + '</h2><p class="hint">Confira se li certo. Se algo estiver errado, é só corrigir aqui.</p>' + campos + acoes);
 }
 function valoresComprovante() {
@@ -255,14 +294,14 @@ async function conferirPagamento(cid, i, dia) {
   await marcarTijolos(cid, i, "Pago", true);
 }
 
-async function situacaoEntrega(cid, i, situacao, vencimento, pagoEm) {
+async function situacaoEntrega(cid, i, situacao, vencimento, pagoEm, valor) {
   if (situacao === "aberto") {
     const r = await sb.from("fin_entregas").delete().eq("carga_id", cid).eq("idx", i);
     if (r.error) { erro = "Não deu pra salvar. Confira a internet."; render(); return; }
     delete D.fin[cid + "|" + i]; await marcarTijolos(cid, i, "A receber", false); await agendarLembretes(); return;
   }
   const pago = R.FORA.includes(situacao);
-  const row = { carga_id: cid, idx: i, situacao, pago_em: pago ? (pagoEm || hojeS()) : null, vencimento: vencimento || null, atualizado_em: new Date().toISOString() };
+  const row = { carga_id: cid, idx: i, situacao, pago_em: pago ? (pagoEm || hojeS()) : null, vencimento: vencimento || null, valor: pago && valor > 0 ? valor : null, atualizado_em: new Date().toISOString() };
   const r = await sb.from("fin_entregas").upsert(row);
   if (r.error) { erro = "Não deu pra salvar. Confira a internet."; render(); return; }
   D.fin[cid + "|" + i] = row;
@@ -330,7 +369,14 @@ const navMes = (acao) => '<div class="nav"><button class="small" data-acao="' + 
 function linhaMovHtml(m) {
   const c = catDe(m.categoria_id), p = pessoaDe(m.pessoa_id), k = cargaDe(m.carga_id);
   const det = [m.pendente ? '<span class="chip red">Perguntar</span>' : c ? esc(c.nome) : "", m.obs ? esc(m.obs) : "", p ? esc(p.nome) : "", k ? "Carga " + diaCurto(k.data) + (m.tipo === "entrada" && m.entrega_idx != null ? " · " + esc(nomeEntrega(k, m.entrega_idx)) : "") : "", esc(m.banco)].filter(Boolean).join(" · ");
-  return '<div class="mv" data-acao="editar" data-id="' + m.id + '"><div class="grow"><div class="trunc"><b>' + esc(m.contraparte || (m.tipo === "entrada" ? "Entrada" : "Saída")) + "</b></div><div class=\"muted trunc\">" + horaMov(m) + " · " + det + " " + chipEscopo(m) + '</div></div><div class="v ' + (m.ignorado ? "muted" : m.tipo === "entrada" ? "pos" : "neg") + '">' + (m.tipo === "entrada" ? "+" : "−") + brl(m.valor) + "</div></div>";
+  return '<div class="mv" data-acao="detalhe" data-longo="editar" data-id="' + m.id + '"><div class="grow"><div class="trunc"><b>' + esc(m.contraparte || (m.tipo === "entrada" ? "Entrada" : "Saída")) + "</b></div><div class=\"muted trunc\">" + horaMov(m) + " · " + det + " " + chipEscopo(m) + '</div></div><div class="v ' + (m.ignorado ? "muted" : m.tipo === "entrada" ? "pos" : "neg") + '">' + (m.tipo === "entrada" ? "+" : "−") + brl(m.valor) + "</div></div>";
+}
+
+/* recebido em dinheiro (ou Pix anotado à mão) de uma entrega: aparece em Movimentos e dá pra editar */
+const NOME_FORA = { dinheiro: "Dinheiro", pix_manual: "Pix anotado à mão" };
+function linhaForaHtml(x) {
+  const k = x.c.id + "|" + x.i;
+  return '<div class="mv" data-acao="det-fora" data-longo="edit-fora" data-k="' + esc(k) + '"><div class="grow"><div class="trunc"><b>' + esc(x.e.cliente || "Sem nome") + '</b></div><div class="muted trunc">' + NOME_FORA[x.s.situacao] + " · Recebimento de cliente · Carga " + diaCurto(x.c.data) + ' <span class="chip emp">Empresa</span></div></div><div class="v pos">+' + brl(x.valor) + "</div></div>";
 }
 
 function perguntaHtml(m) {
@@ -468,12 +514,16 @@ function vCargasLista() {
 function vMovs() {
   const f = L.filtro;
   const lista = D.movs.filter(m => diaMov(m).slice(0, 7) === L.mes && (f === "todos" || (f === "perguntar" ? m.pendente : m.escopo === f))).sort((a, b) => msDe(b.quando) - msDe(a.quando));
+  const fora = f === "todos" || f === "empresa" ? R.recebidosFora(ctx()).filter(x => x.dia.slice(0, 7) === L.mes && x.valor > 0) : [];
   let h = navMes("mes") + '<div class="filtros">' + [["todos", "Todos"], ["empresa", "Empresa"], ["pessoal", "Pessoal"], ["perguntar", "Perguntar"]].map(([k, t]) => '<button aria-pressed="' + (f === k) + '" data-acao="filtro" data-f="' + k + '">' + t + "</button>").join("") + "</div>" +
     '<div class="btns"><button class="pri" data-acao="novo-mov">+ Lançar à mão</button><button data-acao="importar">Importar extrato</button></div>';
-  if (!lista.length) return h + '<p class="muted">Nada por aqui neste mês.</p>';
+  h += '<p class="hint">Toque num movimento pra ver os detalhes. Segure o dedo em cima pra editar.</p>';
+  if (!lista.length && !fora.length) return h + '<p class="muted">Nada por aqui neste mês.</p>';
+  const itens = lista.map(m => ({ d: diaMov(m), t: msDe(m.quando), html: linhaMovHtml(m) })).concat(fora.map(x => ({ d: x.dia, t: pd(x.dia).getTime() + 86399000, html: linhaForaHtml(x) })))
+    .sort((a, b) => b.d.localeCompare(a.d) || b.t - a.t);
   let dia = "";
   h += '<section class="card" style="padding-top:4px">';
-  lista.forEach(m => { const d = diaMov(m); if (d !== dia) { h += '<div class="dia">' + esc(diaLongo(d)) + "</div>"; dia = d; } h += linhaMovHtml(m); });
+  itens.forEach(x => { if (x.d !== dia) { h += '<div class="dia">' + esc(diaLongo(x.d)) + "</div>"; dia = x.d; } h += x.html; });
   return h + "</section>";
 }
 
@@ -513,6 +563,9 @@ function vFicha(p) {
     (f.motor || []).map(m => '<div class="row"><span>Motorista na ' + m.papel + " · " + diaCurto(m.dia) + "</span><b>" + brl(m.valor) + "</b></div>").join("") +
     '<div class="row" style="margin-top:8px"><b>Total no mês</b><b>' + brl(f.ganhou) + "</b></div></section>" +
     conferenciaHtml(f, de, ate) +
+    '<section class="card"><h2>Vales antigos</h2><p class="hint">Dinheiro que ' + esc(p.nome) + ' pegou antes do app existir. Entra no saldo geral como dívida dele.</p>' +
+    ((f.valesAntigos || []).length ? f.valesAntigos.sort((a, b) => msDe(a.quando) - msDe(b.quando)).map(linhaMovHtml).join("") + '<div class="row" style="margin-top:8px"><b>Total de vales</b><b>' + brl(f.totalValesAntigos) + "</b></div>" : '<p class="muted">Nenhum vale antigo lançado.</p>') +
+    '<div class="btns"><button class="pri" data-acao="vale-novo" data-p="' + p.id + '">+ Lançar vale antigo</button></div></section>' +
     '<section class="card"><h2>Recebeu</h2>' + (f.pix.length ? f.pix.sort((a, b) => msDe(a.quando) - msDe(b.quando)).map(linhaMovHtml).join("") : '<p class="muted">Nenhum Pix neste mês.</p>') + '<div class="row" style="margin-top:8px"><b>Total no mês</b><b>' + brl(f.recebeu) + "</b></div></section>";
 }
 
@@ -726,7 +779,11 @@ function janelaEditar(m) {
     const vistos = new Set();
     entregaSel = '<div class="field"><label for="ed-ent">Entrega da Tijolos</label><select id="ed-ent"><option value="">Nenhuma</option>' + ab.filter(x => { const k = x.carga.id + "|" + x.i; if (vistos.has(k)) return false; vistos.add(k); return true; }).map(x => '<option value="' + x.carga.id + "|" + x.i + '"' + (x.carga.id === m.carga_id && x.i === m.entrega_idx ? " selected" : "") + ">" + esc(x.e.cliente || "Sem nome") + " · carga " + diaCurto(x.carga.data) + (x.falta ? " · falta " + brl0(x.falta) : "") + "</option>").join("") + "</select></div>";
   }
-  abrirJanela("<h2>" + (m.tipo === "entrada" ? "Entrada" : "Saída") + " de " + brl(m.valor) + '</h2><p class="muted">' + esc(m.contraparte || "") + " · " + esc(diaLongo(diaMov(m))) + (m.origem !== "extrato" ? " às " + horaMov(m) : "") + " · " + esc(m.banco) + "</p>" + (m.texto ? '<p class="hint">' + esc(m.texto) + "</p>" : "") +
+  const q = new Date(m.quando);
+  abrirJanela("<h2>Editar " + (m.tipo === "entrada" ? "entrada" : "saída") + '</h2><p class="muted">' + esc(ORIGEM[m.origem] || m.origem) + " · " + esc(m.banco) + "</p>" + (m.texto ? '<p class="hint">' + esc(m.texto) + "</p>" : "") +
+    '<div class="grid2"><div class="field"><label for="ed-valor">Valor (R$)</label><input id="ed-valor" inputmode="decimal" value="' + String((+m.valor).toFixed(2)).replace(".", ",") + '"></div><div class="field"><label for="ed-quem">' + (m.tipo === "entrada" ? "De quem" : "Com quem / onde") + '</label><input id="ed-quem" value="' + esc(m.contraparte || "") + '"></div></div>' +
+    '<div class="grid2"><div class="field"><label for="ed-dia">Dia</label><input type="date" id="ed-dia" value="' + diaMov(m) + '"></div><div class="field"><label for="ed-hora">Hora</label><input type="time" id="ed-hora" value="' + q.toTimeString().slice(0, 5) + '"></div></div>' +
+    (BANCO_REAL(m) ? '<p class="hint">Esse veio do banco. Só mude valor ou dia se o banco leu errado.</p>' : "") +
     '<div class="field"><label for="ed-cat">Categoria</label><select id="ed-cat"><option value="">Escolha…</option>' + optCats(m.tipo, m.categoria_id) + "</select></div>" + entregaSel +
     (m.tipo === "saida" ? '<div class="field"><label for="ed-carga">Carga</label><select id="ed-carga"><option value="">Nenhuma</option>' + cs.map(c => '<option value="' + c.id + '"' + (c.id === m.carga_id ? " selected" : "") + ">" + diaCurto(c.data) + " · " + esc(c.entregas.map(e => e.cliente || "Sem nome").join(", ")) + "</option>").join("") + "</select></div>" +
       '<div class="field"><label for="ed-forn">Se for compra de tijolo, de qual cerâmica?</label><select id="ed-forn">' + Object.entries(R.FORNECEDORES).map(([k, n]) => '<option value="' + k + '"' + ((m.fornecedor || R.fornecedorDoNome(m.contraparte)) === k ? " selected" : "") + ">" + esc(n) + "</option>").join("") + "</select></div>" +
@@ -734,7 +791,63 @@ function janelaEditar(m) {
     '<div class="field"><label for="ed-obs">Observação</label><input id="ed-obs" value="' + esc(m.obs || "") + '" placeholder="' + (m.tipo === "saida" ? "Ex.: troca de embreagem, kit de freio" : "Ex.: frete de retorno") + '"></div>' +
     (m.contraparte ? '<label class="row" style="justify-content:flex-start;margin:10px 0"><input type="checkbox" id="ed-lembrar" checked> <span>Lembrar pra próximas de "' + esc(m.contraparte) + '"</span></label>' : "") +
     '<label class="row" style="justify-content:flex-start;margin:10px 0"><input type="checkbox" id="ed-ign"' + (m.ignorado ? " checked" : "") + "> <span>Não contar esse movimento</span></label>" +
-    '<div class="btns"><button class="pri" data-acao="salvar-mov" data-id="' + m.id + '">Salvar</button><button data-acao="fechar">Cancelar</button>' + (m.origem === "manual" ? '<button class="danger" data-acao="apagar-mov" data-id="' + m.id + '">Apagar</button>' : "") + "</div>");
+    '<div class="btns"><button class="pri" data-acao="salvar-mov" data-id="' + m.id + '">Salvar</button><button data-acao="fechar">Cancelar</button>' + (!BANCO_REAL(m) ? '<button class="danger" data-acao="apagar-mov" data-id="' + m.id + '">Apagar</button>' : "") + "</div>" +
+    (BANCO_REAL(m) ? '<p class="hint">Lançado em dobro? Marque "Não contar esse movimento": ele some das contas e não volta na próxima leitura do banco.</p>' : ""));
+}
+
+const ORIGEM = { notificacao: "Notificação do banco", extrato: "Extrato do banco", comprovante: "Comprovante", manual: "Lançado à mão", vale: "Vale antigo (antes do sistema)" };
+const BANCO_REAL = m => m.origem === "notificacao" || m.origem === "extrato";
+function statusMov(m) {
+  if (m.ignorado) return ['<span class="chip">Não conta</span>', "Fica guardado, mas não entra em nenhuma conta."];
+  if (m.pendente) return ['<span class="chip red">Esperando você</span>', "Ainda não sei com o que foi. Responda no Início ou edite."];
+  return ['<span class="chip green">Anotado</span>', "Já está separado e entra nas contas."];
+}
+function janelaDetalhe(m) {
+  const c = catDe(m.categoria_id), p = pessoaDe(m.pessoa_id), k = cargaDe(m.carga_id), st = statusMov(m);
+  const lin = (r, v) => v ? '<div class="row"><span class="muted">' + r + '</span><span style="text-align:right">' + v + "</span></div>" : "";
+  abrirJanela('<h2 class="' + (m.tipo === "entrada" ? "pos" : "neg") + '">' + (m.tipo === "entrada" ? "+" : "−") + brl(m.valor) + "</h2>" +
+    '<p><b>' + esc(m.contraparte || (m.tipo === "entrada" ? "Entrada" : "Saída")) + "</b></p>" +
+    '<div class="row"><span>' + st[0] + '</span></div><p class="hint">' + st[1] + "</p>" +
+    '<section class="card">' +
+    lin("O que foi", esc(m.tipo === "entrada" ? "Entrada (recebi)" : "Saída (paguei)")) +
+    lin("Dia", esc(cap(diaLongo(diaMov(m)))) + (m.origem !== "extrato" ? " às " + horaMov(m) : "")) +
+    lin("Categoria", c ? esc(c.nome) : '<span class="muted">sem categoria</span>') +
+    lin("De quem é", m.escopo ? (m.escopo === "empresa" ? "Empresa" : "Pessoal") : "") +
+    lin("Carga", k ? "Carga " + diaCurto(k.data) + " · " + esc(m.tipo === "entrada" && m.entrega_idx != null ? nomeEntrega(k, m.entrega_idx) : k.entregas.map(e => e.cliente || "Sem nome").join(", ")) : "") +
+    lin("Equipe", p ? esc(p.nome) + (m.origem === "vale" ? " (vale: conta como dívida dele)" : "") : "") +
+    lin("Cerâmica", m.fornecedor ? esc(R.FORNECEDORES[m.fornecedor] || m.fornecedor) : "") +
+    lin("Banco", esc(m.banco)) + lin("Como entrou", esc(ORIGEM[m.origem] || m.origem)) +
+    lin("Observação", m.obs ? esc(m.obs) : "") +
+    lin("Anotado em", m.criado_em ? esc(new Date(m.criado_em).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })) : "") +
+    "</section>" + (m.texto ? '<details><summary class="muted">Texto original</summary><p class="hint">' + esc(m.texto) + "</p></details>" : "") +
+    '<div class="btns"><button class="pri" data-acao="editar" data-id="' + m.id + '">Editar</button><button data-acao="fechar">Fechar</button></div>');
+}
+function foraDe(k) { return R.recebidosFora(ctx()).find(x => x.c.id + "|" + x.i === k) || null; }
+function janelaDetFora(x) {
+  abrirJanela('<h2 class="pos">+' + brl(x.valor) + "</h2><p><b>" + esc(x.e.cliente || "Sem nome") + '</b></p><div class="row"><span class="chip green">Recebido</span></div>' +
+    '<section class="card"><div class="row"><span class="muted">Como pagou</span><span>' + NOME_FORA[x.s.situacao] + '</span></div><div class="row"><span class="muted">Dia</span><span>' + esc(cap(diaLongo(x.dia))) + '</span></div>' +
+    '<div class="row"><span class="muted">Entrega</span><span>Carga ' + diaCurto(x.c.data) + " · " + esc(x.e.medida || "") + '</span></div><div class="row"><span class="muted">Valor da entrega</span><span>' + brl(x.total) + "</span></div>" +
+    (x.pix ? '<div class="row"><span class="muted">Já caiu por Pix</span><span>' + brl(x.pix) + "</span></div>" : "") + "</section>" +
+    (x.pix ? '<p class="hint">O Pix que caiu dessa entrega não é contado de novo: aqui fica só o resto.</p>' : "") +
+    '<div class="btns"><button class="pri" data-acao="edit-fora" data-k="' + esc(x.c.id + "|" + x.i) + '">Editar</button><button data-acao="fechar">Fechar</button></div>');
+}
+function janelaEditFora(x) {
+  const k = x.c.id + "|" + x.i;
+  abrirJanela("<h2>Editar recebimento</h2><p class=\"muted\">" + esc(x.e.cliente || "Sem nome") + " · carga " + diaCurto(x.c.data) + " · entrega de " + brl(x.total) + "</p>" +
+    '<div class="field"><label for="fo-sit">Como pagou</label><select id="fo-sit"><option value="dinheiro"' + (x.s.situacao === "dinheiro" ? " selected" : "") + '>Dinheiro</option><option value="pix_manual"' + (x.s.situacao === "pix_manual" ? " selected" : "") + '>Pix (anotado à mão)</option><option value="prazo">Ainda não pagou: dei prazo</option><option value="aberto">Ainda não pagou</option></select></div>' +
+    '<div class="grid2"><div class="field"><label for="fo-valor">Quanto recebeu (R$)</label><input id="fo-valor" inputmode="decimal" value="' + String((+x.valor).toFixed(2)).replace(".", ",") + '"></div><div class="field"><label for="fo-dia">Dia</label><input type="date" id="fo-dia" value="' + x.dia + '"></div></div>' +
+    '<p class="hint">Se o cliente pagou uma parte por Pix e o resto em dinheiro, coloque aqui só o que veio em dinheiro.</p>' +
+    '<div class="btns"><button class="pri" data-acao="salvar-fora" data-k="' + esc(k) + '">Salvar</button><button data-acao="fechar">Cancelar</button></div>');
+}
+
+function janelaVale(pid, pre) {
+  const ps = D.pessoas.filter(p => p.ativo || p.id === pid);
+  pre = pre || {};
+  abrirJanela('<h2>Vale antigo</h2><p class="hint">Pagamento que a pessoa pegou antes do sistema. Conta como dívida dela no saldo geral.</p>' +
+    '<div class="field"><label for="vl-p">Quem pegou</label><select id="vl-p">' + ps.map(p => '<option value="' + p.id + '"' + (p.id === pid ? " selected" : "") + ">" + esc(p.nome) + "</option>").join("") + "</select></div>" +
+    '<div class="grid2"><div class="field"><label for="vl-valor">Valor (R$)</label><input id="vl-valor" inputmode="decimal" placeholder="0,00" value="' + (pre.valor ? String((+pre.valor).toFixed(2)).replace(".", ",") : "") + '"></div><div class="field"><label for="vl-dia">Dia do recibo</label><input type="date" id="vl-dia" value="' + (pre.dia || hojeS()) + '"></div></div>' +
+    '<div class="field"><label for="vl-obs">Observação</label><input id="vl-obs" placeholder="Ex.: recibo nº 12, vale pra conta de luz" value="' + esc(pre.obs || "") + '"></div>' +
+    '<div class="btns"><button class="pri" data-acao="vale-salvar">Lançar vale</button><button data-acao="' + (pre.comp ? "comp-prox" : "fechar") + '">Cancelar</button></div><p class="hint" id="vl-msg"></p>');
 }
 
 function janelaNovoMov() {
@@ -839,6 +952,36 @@ async function acao(a, ds, alvo) {
     case "liq-abrir": janelaLiquido(ds.q); return;
     case "filtro": L.filtro = ds.f; salvarLocal(); render(); return;
     case "editar": if (m) janelaEditar(m); return;
+    case "vale-novo": janelaVale(ds.p); return;
+    case "comp-vale": { const v = valoresComprovante(); janelaVale(null, { valor: v.valor, dia: v.dia, obs: "Recibo " + (v.contraparte || ""), comp: true }); return; }
+    case "vale-salvar": {
+      const pid = valorDe("vl-p"), v = parseValor(valorDe("vl-valor")), dia = valorDe("vl-dia"), obs = valorDe("vl-obs").trim(), pe = pessoaDe(pid), cf = D.cats.find(x => x.nome === "Funcionários/ajudantes");
+      if (!pe || !(v > 0) || !dia) { alert("Escolha a pessoa e coloque o valor e o dia."); return; }
+      const [y, mo, d] = dia.split("-").map(Number), val = r2(v);
+      // a chave é sempre a mesma pro mesmo vale: tocar duas vezes ou mandar o recibo de novo não lança duas vezes
+      const chave = "vale|" + pid + "|" + dia + "|" + val.toFixed(2) + "|" + R.norm(obs).slice(0, 40);
+      alvo.disabled = true;
+      const r = await sb.from("fin_movimentos").upsert({ chave, origem: "vale", quando: new Date(y, mo - 1, d, 12, 0).toISOString(), tipo: "saida", valor: val, contraparte: pe.nome, texto: "Vale antigo (antes do sistema)", banco: "Dinheiro",
+        categoria_id: cf ? cf.id : null, escopo: "empresa", pessoa_id: pid, obs: obs || null, pendente: false, ignorado: false }, { onConflict: "chave", ignoreDuplicates: true }).select();
+      alvo.disabled = false;
+      if (r.error) { if (ehErroSessao(r.error)) { await sessaoCaiu(); return; } const el = document.getElementById("vl-msg"); if (el) el.textContent = "Não deu pra salvar. Confira a internet."; return; }
+      if (!(r.data || []).length) { const el = document.getElementById("vl-msg"); if (el) el.textContent = "Esse vale já estava lançado (mesma pessoa, dia, valor e observação). Não lancei de novo."; return; }
+      D.movs.push(r.data[0]); msg = "Vale de " + brl(val) + " lançado na ficha de " + pe.nome + ".";
+      if (filaComp.length || compAtual) proximoComprovante(); else fecharJanela();
+      break;
+    }
+    case "detalhe": if (m) janelaDetalhe(m); return;
+    case "det-fora": { const x = foraDe(ds.k); if (x) janelaDetFora(x); return; }
+    case "edit-fora": { const x = foraDe(ds.k); if (x) janelaEditFora(x); return; }
+    case "salvar-fora": {
+      const [cid, i] = ds.k.split("|"), sit = valorDe("fo-sit"), dia = valorDe("fo-dia"), v = parseValor(valorDe("fo-valor"));
+      if (sit === "prazo") { await situacaoEntrega(cid, +i, "prazo", addDias(hojeS(), 7)); fecharJanela(); msg = "Voltou pra prazo (7 dias). Mude a data no alerta se precisar."; break; }
+      if (sit === "aberto") { await situacaoEntrega(cid, +i, "aberto"); fecharJanela(); msg = "Marcado como não pago."; break; }
+      if (!(v > 0) || !dia) { alert("Coloque o valor e o dia."); return; }
+      const x = foraDe(ds.k), resto = x ? r2(x.total - x.pix) : v;
+      await situacaoEntrega(cid, +i, sit, null, dia, Math.abs(v - resto) < 0.01 ? null : v);
+      fecharJanela(); msg = "Recebimento salvo."; break;
+    }
     case "novo-mov": janelaNovoMov(); return;
     case "importar": janelaImportar(); return;
     case "ficha": L.pessoa = ds.p; salvarLocal(); render(); window.scrollTo(0, 0); return;
@@ -846,7 +989,7 @@ async function acao(a, ds, alvo) {
     case "nova-pessoa": janelaPessoa(null); return;
     case "editar-pessoa": janelaPessoa(pessoaDe(ds.p)); return;
     case "outra-entrega": if (m) janelaOutraEntrega(m); return;
-    case "sair": await sb.auth.signOut(); D = vazio(); render(); return;
+    case "sair": { D.perfil = null; await sb.auth.signOut({ scope: "local" }); D = vazio(); erro = ""; render(); return; }
 
     case "resp": {
       const c = catDe(ds.cat); if (!m || !c) return;
@@ -879,6 +1022,9 @@ async function acao(a, ds, alvo) {
       if (!m) return;
       const cat = catDe(valorDe("ed-cat")), ign = document.getElementById("ed-ign").checked, lembrar = document.getElementById("ed-lembrar") && document.getElementById("ed-lembrar").checked;
       const up = { categoria_id: cat ? cat.id : null, escopo: cat ? cat.escopo : null, ignorado: ign, pendente: !cat && !ign, obs: valorDe("ed-obs").trim() || null };
+      { const v = parseValor(valorDe("ed-valor")), dia = valorDe("ed-dia"); if (!(v > 0) || !dia) { alert("Coloque o valor e o dia."); return; }
+        const [y, mo, d] = dia.split("-").map(Number), [hh, mi] = (valorDe("ed-hora") || "12:00").split(":").map(Number);
+        up.valor = r2(v); up.contraparte = valorDe("ed-quem").trim(); up.quando = new Date(y, mo - 1, d, hh, mi).toISOString(); }
       const antes = m.carga_id && m.entrega_idx != null ? [m.carga_id, m.entrega_idx] : null;
       if (m.tipo === "saida") { up.carga_id = valorDe("ed-carga") || null; up.pessoa_id = valorDe("ed-pessoa") || null; if (up.pessoa_id) up.escopo = "empresa"; up.fornecedor = cat && cat.nome.startsWith("Compra de tijolo") ? valorDe("ed-forn") : null; }
       else { const v = valorDe("ed-ent"); if (v) { const [cid, i] = v.split("|"); up.carga_id = cid; up.entrega_idx = +i; } else { up.carga_id = null; up.entrega_idx = null; } }
@@ -889,7 +1035,13 @@ async function acao(a, ds, alvo) {
       if (antes && (antes[0] !== up.carga_id || antes[1] !== up.entrega_idx)) await desfazerPagamento(antes[0], antes[1]);
       fecharJanela(); msg = "Salvo."; break;
     }
-    case "apagar-mov": if (m) { await sb.from("fin_movimentos").delete().eq("id", m.id); D.movs = D.movs.filter(x => x !== m); fecharJanela(); } break;
+    case "apagar-mov": {
+      if (!m) return;
+      if (alvo.textContent !== "Toque de novo pra apagar") { alvo.textContent = "Toque de novo pra apagar"; return; }
+      const r = await sb.from("fin_movimentos").delete().eq("id", m.id);
+      if (r.error) { erro = "Não deu pra apagar. Confira a internet."; break; }
+      D.movs = D.movs.filter(x => x !== m); fecharJanela(); msg = "Apagado."; break;
+    }
     case "criar-mov": {
       const v = parseValor(valorDe("nv-valor")); if (!(v > 0)) { alert("Coloque o valor."); return; }
       const [y, mo, d] = valorDe("nv-dia").split("-").map(Number), [hh, mi] = (valorDe("nv-hora") || "12:00").split(":").map(Number);
@@ -1100,7 +1252,19 @@ async function desfazerPagamento(cid, i) {
 }
 
 /* ---------- eventos ---------- */
+/* segurar o dedo = editar (data-longo); tocar = ver detalhes */
+let toqueLongo = null, ignorarClique = false;
+const cancelarLongo = () => { clearTimeout(toqueLongo && toqueLongo.t); toqueLongo = null; };
+document.addEventListener("pointerdown", e => {
+  const el = e.target.closest("[data-longo]"); if (!el) return;
+  cancelarLongo();
+  toqueLongo = { x: e.clientX, y: e.clientY, t: setTimeout(() => { toqueLongo = null; ignorarClique = true; setTimeout(() => { ignorarClique = false; }, 700); if (navigator.vibrate) try { navigator.vibrate(30); } catch (x) {} acao(el.dataset.longo, el.dataset, el); }, 550) };
+});
+document.addEventListener("pointermove", e => { if (toqueLongo && Math.hypot(e.clientX - toqueLongo.x, e.clientY - toqueLongo.y) > 10) cancelarLongo(); });
+["pointerup", "pointercancel"].forEach(t => document.addEventListener(t, cancelarLongo));
+document.addEventListener("contextmenu", e => { if (e.target.closest("[data-longo]")) e.preventDefault(); });
 document.addEventListener("click", e => {
+  if (ignorarClique) { ignorarClique = false; e.preventDefault(); return; }
   const nova = Aparencia.clique(e.target);
   if (nova) { sb.rpc("salvar_aparencia", { a: nova }).then(() => {}); if (D.perfil) D.perfil.aparencia = nova; render(); return; }
   if (e.target.closest("#cfgbtn")) { L.tab = L.tab === "mais" ? "inicio" : "mais"; L.pessoa = null; msg = ""; salvarLocal(); render(); window.scrollTo(0, 0); return; }
@@ -1145,7 +1309,7 @@ function ouvirMudancas() {
 
 async function entrar(user) {
   const { data } = await sb.from("profiles").select("*").eq("id", user.id).single();
-  if (!data || !data.admin) { await sb.auth.signOut(); erro = "Esse app é só pro administrador."; render(); return; }
+  if (!data || !data.admin) { await sb.auth.signOut({ scope: "local" }); erro = "Esse app é só pro administrador."; render(); return; }
   D.perfil = data; erro = "";
   main.innerHTML = '<div class="carregando">Carregando…</div>';
   Aparencia.aplicar(data.aparencia);
