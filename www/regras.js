@@ -261,27 +261,10 @@ function diasUteis(de, ate) {
   return out;
 }
 
-function ficha(ctx, p, de, ate) {
-  // de/ate: período (YYYY-MM-DD). Saldo usa tudo desde o início da pessoa.
-  const calc = (a, b) => {
-    const ini = a > p.inicio ? a : p.inicio;
-    const ajud = ctx.ajudantes.filter(x => x.pessoa_id === p.id).map(x => ({ x, c: ctx.cargas.find(c => c.id === x.carga_id) })).filter(o => o.c && String(o.c.data).slice(0, 10) >= ini && String(o.c.data).slice(0, 10) <= b);
-    const ganhoAjud = ajud.reduce((s, o) => s + +o.x.valor, 0);
-    let diarias = 0, faltas = [], dias = [];
-    if (p.tipo === "vendedor" && ini <= b) {
-      dias = diasUteis(ini, b);
-      faltas = ctx.faltas.filter(f => f.pessoa_id === p.id && f.dia >= ini && f.dia <= b).map(f => f.dia);
-      diarias = (dias.length - dias.filter(d => faltas.includes(d)).length) * (+p.salario_mes || 0) / 20;
-    }
-    const motor = ganhosMotorista(ctx, ini, b).filter(m => mesmoNome(m.nome, p.nome)), ganhoMot = motor.reduce((s, m) => s + m.valor, 0);
-    const pix = ctx.movs.filter(m => m.tipo === "saida" && !m.ignorado && m.pessoa_id === p.id && diaDe(new Date(m.quando).getTime()) >= ini && diaDe(new Date(m.quando).getTime()) <= b);
-    const recebeu = pix.reduce((s, m) => s + +m.valor, 0);
-    const vendas = p.tipo === "vendedor" ? ctx.cargas.filter(c => norm(c.vendedor) === norm(p.nome) && String(c.data).slice(0, 10) >= ini && String(c.data).slice(0, 10) <= b) : [];
-    return { ajud, ganhoAjud: r2(ganhoAjud), motor, ganhoMot: r2(ganhoMot), diasTrab: dias.length - faltas.length, faltas, diarias: r2(diarias), ganhou: r2(ganhoAjud + diarias + ganhoMot), pix, recebeu: r2(recebeu), vendas, vendido: r2(vendas.reduce((s, c) => s + (c.entregas || []).reduce((t, e) => t + totalEntrega(e), 0), 0)) };
-  };
-  const periodo = calc(de, ate), geral = calc(p.inicio, ate);
-  return Object.assign(periodo, { saldo: r2(geral.ganhou - geral.recebeu) });
-}
+/* ficha da pessoa: lógica no equipe.js, igual nos dois apps (presença por turno do vendedor, descarga,
+   carregada dividida entre quem carregou, motorista). Mesmos campos de antes, mais carreg e ganhoCarreg. */
+const EQ = typeof module !== "undefined" && module.exports ? require("./equipe.js") : raiz.Equipe;
+function ficha(ctx, p, de, ate) { return EQ.ficha(ctx, p, de, ate); }
 
 /* ---------- fornecedores ---------- */
 // quanto de tijolo foi comprado de cada cerâmica (custo da Tijolos) e quanto já foi pago
