@@ -44,7 +44,7 @@ const salvarLocal = () => gravar("fin-local", L);
 if (!ler("fin-local", null)) salvarLocal(); // guarda a data de início na primeira vez
 let D = vazio();
 function vazio() { return { perfil: null, cats: [], regras: [], pessoas: [], movs: [], cargas: [], admin: {}, fin: {}, ajudantes: [], info: {}, faltas: [], contas: [], cadastro: null, rels: [], viag: [], presencas: [], lancs: [] }; }
-let liberado = true, msg = "", erro = "", sincronizando = false, ultimaSync = null;
+let leitor = { conectado: true, ultimoAviso: 0 }, liberado = true, msg = "", erro = "", sincronizando = false, ultimaSync = null;
 const ctx = () => ({ cats: D.cats, regras: D.regras, pessoas: D.pessoas, movs: D.movs, cargas: D.cargas, admin: D.admin, fin: D.fin, ajudantes: D.ajudantes, info: D.info, faltas: D.faltas, contas: D.contas, viag: D.viag, presencas: D.presencas, lancamentos: D.lancs });
 const catDe = id => D.cats.find(c => c.id === id);
 const pessoaDe = id => D.pessoas.find(p => p.id === id);
@@ -171,7 +171,7 @@ async function sincronizar(silencioso) {
   if (sincronizando) return; sincronizando = true;
   try {
     if (Avisos) {
-      try { liberado = !!(await Avisos.status()).liberado; } catch (e) {}
+      try { const st = await Avisos.status(); liberado = !!st.liberado; leitor = { conectado: st.conectado !== false, ultimoAviso: +st.ultimoAviso || 0 }; } catch (e) {}
       const { itens } = await Avisos.pegar();
       const lidos = [];
       (itens || []).forEach(a => { const m = LE.lerAviso(a); if (m) lidos.push(Object.assign(m, { chave: "not|" + a.chave, origem: "notificacao" })); });
@@ -472,6 +472,7 @@ function vInicio() {
   const aReceber = abertas.filter(x => !(D.fin[x.carga.id + "|" + x.i] || {}).vencimento).reduce((s, x) => s + x.falta, 0);
   const fiado = abertas.filter(x => (D.fin[x.carga.id + "|" + x.i] || {}).situacao === "prazo").reduce((s, x) => s + x.falta, 0);
   let h = "";
+  if (NATIVO && liberado && !leitor.conectado) h += '<section class="card red"><h2>O Android desligou a leitura das notificações</h2><p>Os Pix e compras podem não estar entrando sozinhos' + (leitor.ultimoAviso ? " desde " + diaCurto(R.diaDe(leitor.ultimoAviso)) : "") + '. Já pedi pra religar. Para não acontecer de novo:</p><ol class="passos"><li>Toque em <b>Bateria</b> e deixe o Financeiro Tavares <b>sem restrição</b>.</li><li>Se continuar, toque em <b>Abrir ajustes</b>, desligue e ligue de novo o Financeiro Tavares.</li></ol><div class="btns"><button class="pri" data-acao="bateria">Bateria</button><button data-acao="liberar">Abrir ajustes</button></div></section>';
   if (NATIVO && !liberado) h += '<section class="card red"><h2>Falta liberar a leitura das notificações</h2><ol class="passos"><li>Toque em <b>Abrir ajustes</b> e ative <b>Financeiro Tavares</b>.</li><li>Se o Android disser que é uma <b>configuração restrita</b>: toque em <b>Info do app</b>, depois nos <b>três pontinhos</b> lá em cima, em <b>Permitir configurações restritas</b>, e volte no passo 1.</li></ol><div class="btns"><button class="pri" data-acao="liberar">Abrir ajustes</button><button data-acao="info-app">Info do app</button></div></section>';
   if (al.length) h += '<section class="card red" data-acao="abrir-alertas" style="cursor:pointer"><h2 style="color:var(--danger)">' + al.length + (al.length > 1 ? " entregas sem recebimento" : " entrega sem recebimento") + '</h2><p>Toque pra dizer se o cliente pagou em dinheiro ou se você deu prazo.</p></section>';
   if (aj.length) h += ajudantesHtml(aj[0]) + (aj.length > 1 ? '<p class="hint">Mais ' + (aj.length - 1) + " carga(s) esperando os ajudantes.</p>" : "");
@@ -754,7 +755,7 @@ function vMais() {
     '<div class="grid2" style="margin-top:12px"><input id="nova-cat" placeholder="Nova categoria"><select id="nova-cat-tipo"><option value="saida|empresa">Gasto da empresa</option><option value="saida|pessoal">Gasto pessoal</option><option value="entrada|empresa">Entrada da empresa</option><option value="entrada|pessoal">Entrada pessoal</option></select></div><div class="btns"><button class="pri" data-acao="criar-cat">Criar categoria</button></div></section>' +
     '<section class="card"><h2>O que o app já aprendeu</h2>' + (D.regras.length ? D.regras.map(r => { const c = catDe(r.categoria_id), p = pessoaDe(r.pessoa_id); return '<div class="row" style="padding:6px 0;border-top:1px solid var(--line)"><span class="grow trunc">' + esc(r.padrao) + ' <span class="muted">→ ' + esc(r.cliente ? "cliente " + r.cliente : p ? p.nome : c ? c.nome : "?") + "</span></span><button class=\"small\" data-acao=\"apagar-regra\" data-id=\"" + r.id + '">Esquecer</button></div>'; }).join("") : '<p class="muted">Ainda nada. Cada resposta sua vira uma regra aqui.</p>') + "</section>" +
     '<section class="card"><h2>Ajustes</h2><div class="field"><label for="desde">Alertas de entregas a partir de</label><input type="date" id="desde" value="' + L.desde + '"></div>' +
-    (NATIVO ? '<p>Leitura das notificações: <b>' + (liberado ? "ligada" : "desligada") + '</b></p><div class="btns"><button data-acao="liberar">Abrir ajustes de notificação</button></div>' : "") +
+    (NATIVO ? '<p>Leitura das notificações: <b>' + (!liberado ? "desligada" : leitor.conectado ? "ligada" : "parada pelo Android") + "</b>" + (leitor.ultimoAviso ? ' <span class="muted">(último aviso de banco: ' + diaCurto(R.diaDe(leitor.ultimoAviso)) + ")</span>" : "") + '</p><div class="btns"><button data-acao="liberar">Abrir ajustes de notificação</button><button data-acao="bateria">Bateria sem restrição</button></div>' : "") +
     '<p class="hint">Versão do app: 1.0.' + (window.VERSAO_APP || 0) + (NATIVO ? ' · <button class="small ghost" data-acao="procurar-versao">Procurar atualização</button>' : "") + "</p>" +
     '<p class="hint">Bancos lidos: ' + esc([...new Set(Object.values(LE.BANCOS))].join(", ")) + ", Sicoob e Sicredi.</p>" +
     '<div class="btns"><button data-acao="lev-abrir">Abrir o levantamento</button><button data-acao="sair">Sair</button></div></section>';
@@ -972,6 +973,7 @@ async function acao(a, ds, alvo) {
     case "abrir-alertas": janelaAlertas(); return;
     case "liberar": if (Avisos) await Avisos.abrirAjustes(); return;
     case "info-app": if (Avisos) await Avisos.abrirInfoDoApp(); return;
+    case "bateria": if (Avisos && Avisos.abrirBateria) await Avisos.abrirBateria(); return;
     case "mes": case "mes-inicio": L.mes = addMes(L.mes, +ds.n); salvarLocal(); render(); return;
     case "semana": L.semana = addDias(L.semana, +ds.n); salvarLocal(); render(); return;
     case "liq-abrir": janelaLiquido(ds.q); return;
