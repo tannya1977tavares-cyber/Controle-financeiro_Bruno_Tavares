@@ -29,8 +29,14 @@ r = s("LOJA DO ZE", 80, "2026-11-03", 9); assert.deepStrictEqual([r.pendente, r.
 // pix recebido: nome + valor -> liga sozinho
 const e = (contraparte, valor) => R.classificar({ tipo: "entrada", contraparte, valor, quando: ms("2026-11-03", 15) }, ctx);
 r = e("PAULO HENRIQUE COSTA", 12595); assert.deepStrictEqual([r.carga_id, r.entrega_idx, r.pendente], ["k1", 0, false]);
-// só valor bate -> pergunta, com sugestão
-r = e("MARIA LIMA", 2000); assert.strictEqual(r.pendente, true); assert.strictEqual(r.candidatos[0].i, 1);
+// só o valor bate, e numa entrega só -> liga sozinho (o Bruno pediu: caiu compatível, já identifica)
+r = e("MARIA LIMA", 2000); assert.deepStrictEqual([r.carga_id, r.entrega_idx, r.pendente], ["k1", 1, false]);
+// valor que não bate com nada e nome desconhecido -> pergunta
+r = e("MARIA LIMA", 777); assert.strictEqual(r.pendente, true);
+// regra curta demais ("p") não sequestra todo mundo
+ctx.regras.push({ tipo: "entrada", padrao: "p", cliente: "Jose", categoria_id: id("Recebimento de cliente"), escopo: "empresa" });
+r = e("PAULO HENRIQUE COSTA", 12595); assert.deepStrictEqual([r.carga_id, r.entrega_idx], ["k1", 0]);
+ctx.regras.pop();
 // alerta: antes das 20h não; depois sim
 assert.strictEqual(R.alertas(ctx, ms("2026-11-03", 19)).length, 0);
 assert.strictEqual(R.alertas(ctx, ms("2026-11-03", 21)).length, 2);
@@ -51,6 +57,45 @@ const f = R.ficha(ctx, ctx.pessoas[1], "2026-11-01", "2026-11-08");
 assert.deepStrictEqual([f.diasTrab, f.diarias, f.recebeu, f.saldo, f.vendas.length], [4, 340, 100, 240, 1]);
 assert.strictEqual(R.segunda("2026-11-08"), "2026-11-02");
 console.log("regras: tudo certo");
+{
+  // entrega paga por várias pessoas, maquininha com taxa, Pix duplicado e compra recusada
+  const k = { id: "k9", data: "2026-11-24", entregas: [{ cliente: "Thiago", mil: 1.5, preco: 2690, frete: 112.5 }, { cliente: "Iran", mil: 5, preco: 1150 }, { cliente: "Rick Motos", mil: 1, preco: 2340 }] };
+  const cx = { cats, regras: [], pessoas: [], cargas: [k], admin: {}, fin: {}, movs: [], ajudantes: [], info: {}, faltas: [] };
+  const q = (contraparte, valor, extra) => R.classificar(Object.assign({ tipo: "entrada", contraparte, valor, quando: ms("2026-11-24", 10), origem: "notificacao", banco: "Nubank" }, extra), cx);
+  // Thiago: nome + valor exato
+  let x = q("Thiago Guntzel de Souza", 4147.5);
+  assert.deepStrictEqual([x.carga_id, x.entrega_idx, x.pendente], ["k9", 0, false]);
+  cx.movs.push({ id: "t1", tipo: "entrada", origem: "notificacao", valor: 4147.5, contraparte: "Thiago Guntzel de Souza", carga_id: "k9", entrega_idx: 0, quando: new Date(ms("2026-11-24", 10)).toISOString() });
+  // o comprovante do mesmo Pix minutos depois vira duplicata, não pergunta de novo
+  x = q("Thiago", 4147.5, { origem: "comprovante", quando: ms("2026-11-24", 10) + 5 * 60000 });
+  assert.deepStrictEqual([x.ignorado, x.pendente, x.duplicata], [true, false, "t1"]);
+  // Iran pago por duas pessoas: primeiro pelo nome (parcial), o resto fica como falta
+  x = q("IRAN DA SILVA", 3000);
+  assert.deepStrictEqual([x.carga_id, x.entrega_idx], ["k9", 1]);
+  cx.movs.push({ id: "i1", tipo: "entrada", valor: 3000, carga_id: "k9", entrega_idx: 1, quando: new Date(ms("2026-11-24", 11)).toISOString() });
+  assert.strictEqual(R.faltaEntrega(cx, "k9", 1), 2750);
+  // a esposa paga o resto exato: liga sozinho pelo valor que falta
+  x = q("MARIA DE SOUZA", 2750);
+  assert.deepStrictEqual([x.carga_id, x.entrega_idx], ["k9", 1]);
+  cx.movs.push({ id: "i2", tipo: "entrada", valor: 2750, carga_id: "k9", entrega_idx: 1, quando: new Date(ms("2026-11-24", 12)).toISOString() });
+  assert.strictEqual(R.faltaEntrega(cx, "k9", 1), 0);
+  // link InfinitePay: chega sem nome e sem a taxa (2.340 -> 2.241,72)
+  cx.regras.push({ tipo: "entrada", padrao: "vendas", cliente: null, categoria_id: "outras", escopo: "empresa" });
+  x = q("Depósito de vendas", 2241.72, { banco: "InfinitePay", texto: "InfinitePay Depósito de vendas", origem: "extrato" });
+  assert.deepStrictEqual([x.carga_id, x.entrega_idx], ["k9", 2]);
+  cx.movs.push({ id: "r1", tipo: "entrada", valor: 2241.72, banco: "InfinitePay", carga_id: "k9", entrega_idx: 2, quando: new Date(ms("2026-11-24", 13)).toISOString() });
+  assert.deepStrictEqual([R.taxaEntrega(cx, "k9", 2), R.faltaEntrega(cx, "k9", 2)], [98.28, 0]);
+  // depósito pela metade NÃO é taxa: continua faltando
+  cx.movs.pop(); cx.movs.push({ id: "r2", tipo: "entrada", valor: 1000, banco: "InfinitePay", carga_id: "k9", entrega_idx: 2, quando: new Date(ms("2026-11-24", 13)).toISOString() });
+  assert.strictEqual(R.faltaEntrega(cx, "k9", 2), 1340);
+  // depósito da maquininha que não bate com nenhuma entrega segue a regra antiga
+  x = q("Depósito de vendas", 333, { banco: "InfinitePay", texto: "InfinitePay Depósito de vendas", origem: "extrato" });
+  assert.deepStrictEqual([x.categoria_id, x.pendente], ["outras", false]);
+  // compra no débito recusada não é gasto
+  x = R.classificar({ tipo: "saida", contraparte: "AUTOPOSTOVIP não", valor: 700.02, texto: "Compra no débito não realizada · Sua compra de R$ 700,02 em AUTOPOSTOVIP não foi concluída", quando: ms("2026-11-24", 2), origem: "notificacao" }, cx);
+  assert.deepStrictEqual([x.ignorado, x.pendente], [true, false]);
+  console.log("baixa automática e pagamento dividido: tudo certo");
+}
 // extrato não duplica o que veio pela notificação, mas aceita dois Pix iguais no mesmo dia
 const c2 = { movs: [{ id: "n1", origem: "notificacao", tipo: "saida", valor: 150, contraparte: "MARCOS PEREIRA", quando: new Date("2026-11-04T09:00:00").toISOString() }] };
 const usados = new Set();

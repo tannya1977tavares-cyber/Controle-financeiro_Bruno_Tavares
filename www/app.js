@@ -285,8 +285,7 @@ async function marcarTijolos(cid, i, pag, entregue) {
 
 async function conferirPagamento(cid, i, dia) {
   const c = cargaDe(cid); if (!c || !c.entregas[i]) return;
-  const total = R.totalEntrega(c.entregas[i]), pago = R.pagoEntrega(ctx(), cid, i);
-  if (pago < total - 0.99) return;
+  if (R.faltaEntrega(ctx(), cid, i) > 0.99) return;
   const ult = D.movs.filter(m => m.tipo === "entrada" && m.carga_id === cid && m.entrega_idx === i).map(diaMov).sort().pop();
   const row = { carga_id: cid, idx: i, situacao: "pix", pago_em: dia || ult || hojeS(), vencimento: null, atualizado_em: new Date().toISOString() };
   await sb.from("fin_entregas").upsert(row);
@@ -415,8 +414,32 @@ function chipEntrega(c, i) {
   if (s && s.situacao === "dinheiro") return '<span class="chip green">Dinheiro ' + diaCurto(s.pago_em) + "</span>";
   if (s && (s.situacao === "pix" || s.situacao === "pix_manual")) return '<span class="chip green">Pix ' + diaCurto(s.pago_em) + "</span>";
   if (s && s.situacao === "prazo") return '<span class="chip amber">Prazo ' + diaCurto(s.vencimento) + "</span>";
-  if (pago > 0) return '<span class="chip amber">Pagou ' + brl0(pago) + "</span>";
+  if (pago > 0) return '<span class="chip amber">Pagou ' + brl0(pago) + " · falta " + brl0(R.faltaEntrega(ctx(), c.id, i)) + "</span>";
   return '<span class="chip red">A receber</span>';
+}
+
+/* pagamentos ligados a uma entrega (pode ser de várias pessoas) e o que ainda falta */
+function pagamentosEntrega(c, i, tot, pago, s) {
+  const cx = ctx(), lig = D.movs.filter(m => m.tipo === "entrada" && !m.ignorado && m.carga_id === c.id && m.entrega_idx === i).sort((a, b) => String(a.quando).localeCompare(String(b.quando)));
+  if (s && ["dinheiro", "pix_manual", "nao_cobrar"].includes(s.situacao) && !lig.length) return "";
+  const falta = R.faltaEntrega(cx, c.id, i), taxa = R.taxaEntrega(cx, c.id, i), k = c.id + "|" + i;
+  let h = lig.map(m => '<div class="row muted" style="font-size:13px;padding-left:10px"><span class="grow trunc">↳ ' + esc(m.contraparte || m.banco || "Pagamento") + " · " + diaCurto(diaMov(m)) + " · " + esc(m.banco || "") + "</span><span>" + brl(m.valor) + '</span> <button class="small ghost" data-acao="desligar" data-id="' + m.id + '" aria-label="Desvincular">✕</button></div>').join("");
+  if (lig.length || falta > 0.99) {
+    h += '<div class="row" style="font-size:13px;padding-left:10px"><span class="grow">Recebido ' + brl(pago) + " de " + brl(tot) + (taxa ? " · taxa da maquininha " + brl(taxa) : "") + "</span>" +
+      (falta > 0.99 ? '<b class="neg">Falta ' + brl(falta) + "</b>" : '<b class="pos">Quitado</b>') + "</div>";
+    if (falta > 0.99 && !(s && ["dinheiro", "pix_manual", "nao_cobrar"].includes(s.situacao))) h += '<div class="btns" style="padding-left:10px"><button class="small" data-acao="anexar-pag" data-k="' + k + '">Anexar pagamento</button></div>';
+  }
+  return h;
+}
+
+function janelaAnexarPagamento(k) {
+  const [cid, i0] = k.split("|"), i = +i0, c = cargaDe(cid); if (!c || !c.entregas[i]) return;
+  const falta = R.faltaEntrega(ctx(), cid, i), desde = addDias(c.data.slice(0, 10), -30);
+  const livres = D.movs.filter(m => m.tipo === "entrada" && !m.ignorado && !m.carga_id && m.escopo !== "pessoal" && diaMov(m) >= desde)
+    .sort((a, b) => Math.abs(a.valor - falta) - Math.abs(b.valor - falta) || String(b.quando).localeCompare(String(a.quando)));
+  abrirJanela("<h2>Pagamento de " + esc(nomeEntrega(c, i)) + "</h2><p class=\"muted\">Falta " + brl(falta) + ". Escolha o recebimento que é dessa entrega (dá pra anexar mais de um).</p>" +
+    (livres.length ? '<div class="btns col">' + livres.slice(0, 30).map(m => '<button data-acao="ligar" data-id="' + m.id + '" data-carga="' + cid + '" data-i="' + i + '">' + brl(m.valor) + " · " + esc(m.contraparte || m.banco || "") + " · " + diaCurto(diaMov(m)) + "</button>").join("") + "</div>" : '<p class="muted">Nenhum recebimento sem entrega desde ' + diaCurto(desde) + ".</p>") +
+    '<div class="btns"><button data-acao="fechar">Cancelar</button></div>');
 }
 
 /* ---------- telas ---------- */
@@ -496,7 +519,7 @@ function vCargasLista() {
     const ent = c.entregas.map((e, i) => {
       const s = D.fin[c.id + "|" + i], pago = R.pagoEntrega(cx, c.id, i), tot = R.totalEntrega(e);
       const chip = chipEntrega(c, i);
-      return '<div class="row"><span class="grow trunc">' + esc(e.cliente || "Sem nome") + ' <span class="muted">· ' + esc(e.medida || "") + "</span></span><span>" + brl0(tot) + "</span> " + chip + "</div>";
+      return '<div class="row"><span class="grow trunc">' + esc(e.cliente || "Sem nome") + ' <span class="muted">· ' + esc(e.medida || "") + "</span></span><span>" + brl0(tot) + "</span> " + chip + "</div>" + pagamentosEntrega(c, i, tot, pago, s);
     }).join("");
     return '<section class="card"><div class="row"><h3 style="margin:0">' + esc(cap(diaLongo(c.data))) + '</h3><span class="chip">' + esc(c.vendedor || "") + "</span></div>" + '<div style="margin-top:8px">' + ent + "</div>" +
       '<div class="stats"><div class="stat"><div class="l">Venda</div><div class="v">' + brl0(r.venda) + '</div></div><div class="stat"><div class="l">Tijolo (cerâmica)</div><div class="v neg">' + brl0(r.tijolo) + '</div></div><div class="stat"><div class="l">Gastos da viagem</div><div class="v neg">' + brl0(r.gastosTotal) + '</div></div><div class="stat"><div class="l">Ajudantes</div><div class="v neg">' + brl0(r.ajudTotal) + "</div></div>" +
@@ -904,7 +927,8 @@ async function procurarVersao() {
 /* ---------- aprender ---------- */
 async function aprender(m, campos) {
   const padrao = R.norm(m.contraparte);
-  if (!padrao) return;
+  // depósito da maquininha não tem o nome do cliente: uma regra daqui ligaria todo depósito ao mesmo cliente
+  if (!padrao || padrao.length < 3 || (m.tipo === "entrada" && R.ehMaquininha(m))) return;
   const velhas = D.regras.filter(r => r.tipo === m.tipo && r.padrao === padrao && r.valor_min == null && r.valor_max == null).map(r => r.id);
   if (velhas.length) await sb.from("fin_regras").delete().in("id", velhas);
   const r = await sb.from("fin_regras").insert(Object.assign({ tipo: m.tipo, padrao }, campos)).select().single();
@@ -916,6 +940,7 @@ async function reclassificarPendentes() {
     const c = R.classificar(Object.assign({}, m, { quando: msDe(m.quando) }), ctx());
     if (c.pendente) continue;
     const up = { categoria_id: c.categoria_id || null, escopo: c.escopo || null, carga_id: c.carga_id || null, entrega_idx: c.entrega_idx ?? null, pessoa_id: c.pessoa_id || null, fornecedor: c.fornecedor || null, pendente: false };
+    if (c.ignorado) up.ignorado = true;
     const r = await sb.from("fin_movimentos").update(up).eq("id", m.id);
     if (!r.error) { Object.assign(m, up); if (m.tipo === "entrada" && m.carga_id) await conferirPagamento(m.carga_id, m.entrega_idx, diaMov(m)); }
   }
@@ -989,6 +1014,14 @@ async function acao(a, ds, alvo) {
     case "nova-pessoa": janelaPessoa(null); return;
     case "editar-pessoa": janelaPessoa(pessoaDe(ds.p)); return;
     case "outra-entrega": if (m) janelaOutraEntrega(m); return;
+    case "anexar-pag": janelaAnexarPagamento(ds.k); return;
+    case "desligar": {
+      if (!m || !m.carga_id) return;
+      const antes = [m.carga_id, m.entrega_idx];
+      const ok = await atualizarMov(m, { carga_id: null, entrega_idx: null, pendente: true });
+      if (ok) { await desfazerPagamento(antes[0], antes[1]); msg = "Pagamento desvinculado. Ele volta para \"Preciso de você\"."; }
+      break;
+    }
     case "sair": { D.perfil = null; await sb.auth.signOut({ scope: "local" }); D = vazio(); erro = ""; render(); return; }
 
     case "resp": {
@@ -1245,7 +1278,7 @@ async function desfazerPagamento(cid, i) {
   const s = D.fin[cid + "|" + i];
   if (!s || s.situacao !== "pix") return;
   const c = cargaDe(cid); if (!c) return;
-  if (R.pagoEntrega(ctx(), cid, i) >= R.totalEntrega(c.entregas[i]) - 0.99) return;
+  if (R.faltaEntrega(ctx(), cid, i) <= 0.99) return;
   await sb.from("fin_entregas").delete().eq("carga_id", cid).eq("idx", i);
   delete D.fin[cid + "|" + i];
   await marcarTijolos(cid, i, "A receber", false);
