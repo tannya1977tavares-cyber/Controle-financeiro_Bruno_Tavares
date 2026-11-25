@@ -60,7 +60,8 @@ function acharPessoa(ctx, nome) {
 
 function acharRegra(ctx, m) {
   const n = norm(m.contraparte); if (!n) return null;
-  const ok = ctx.regras.filter(r => r.tipo === m.tipo && r.padrao && (n === r.padrao || n.includes(r.padrao))
+  // a regra precisa bater em palavras inteiras (uma regra "p" não pode pegar todo nome com p)
+  const ok = ctx.regras.filter(r => r.tipo === m.tipo && r.padrao && r.padrao.length >= 3 && (n === r.padrao || (" " + n + " ").includes(" " + r.padrao + " "))
     && (r.valor_min == null || m.valor >= r.valor_min) && (r.valor_max == null || m.valor <= r.valor_max));
   ok.sort((a, b) => b.padrao.length - a.padrao.length);
   return ok[0] || null;
@@ -80,6 +81,8 @@ function classificarSaida(m, ctx) {
   const emCarga = cargasDoDia(ctx, dia).length > 0;
   const fim = (nome, escopo, extra) => { const c = cat(ctx, nome); return comCarga(ctx, m, Object.assign({ categoria_id: c ? c.id : null, escopo: escopo || (c && c.escopo) || null, pendente: false }, extra || {})); };
 
+  // 0. compra recusada (sem saldo): não saiu dinheiro
+  if (/nao realizada|nao foi concluida|recusad/.test(norm((m.texto || "") + " " + (m.contraparte || "")))) return { categoria_id: null, escopo: null, ignorado: true, pendente: false };
   // 0. pagamento da fatura do cartão: os gastos já contaram quando você comprou
   if (RE_PAGFATURA.test(norm((m.texto || "") + " " + (m.contraparte || "")))) return { categoria_id: null, escopo: null, ignorado: true, pendente: false, fatura: true };
 
@@ -135,12 +138,29 @@ function valorFora(ctx, cid, i) {
   return r2(Math.max(0, totalEntrega(e) - pagoEntrega(ctx, cid, +i)));
 }
 
+/* depósito da maquininha / link de pagamento InfinitePay: chega sem o nome do cliente e já sem a taxa */
+const TAXA_MAX = 0.065;
+const ehMaquininha = m => /infinite/i.test(m.banco || "") || /deposito de vendas/.test(norm((m.texto || "") + " " + (m.contraparte || "")));
+// o que faltou só por causa da taxa da maquininha (até 6,5% do total) não é dívida do cliente
+function taxaEntrega(ctx, cid, i) {
+  const c = ctx.cargas.find(x => x.id === cid), e = c && c.entregas[+i]; if (!e) return 0;
+  const ligados = ctx.movs.filter(m => m.tipo === "entrada" && !m.ignorado && m.carga_id === cid && m.entrega_idx === +i);
+  if (!ligados.some(ehMaquininha)) return 0;
+  const total = totalEntrega(e), dif = r2(total - pagoEntrega(ctx, cid, +i));
+  return dif > 0.99 && dif <= total * TAXA_MAX ? dif : 0;
+}
+// quanto o cliente ainda deve (soma todos os pagamentos ligados, de quem for)
+function faltaEntrega(ctx, cid, i) {
+  const c = ctx.cargas.find(x => x.id === cid), e = c && c.entregas[+i]; if (!e) return 0;
+  return r2(Math.max(0, totalEntrega(e) - pagoEntrega(ctx, cid, +i) - taxaEntrega(ctx, cid, +i)));
+}
+
 function entregasAbertas(ctx) {
   const out = [];
   ctx.cargas.forEach(c => (c.entregas || []).forEach((e, i) => {
     const s = situacao(ctx, c.id, i);
     if (s && (FORA.includes(s.situacao) || s.situacao === "nao_cobrar" || s.situacao === "pix")) return;
-    const total = totalEntrega(e), pago = pagoEntrega(ctx, c.id, i), falta = r2(total - pago);
+    const total = totalEntrega(e), pago = pagoEntrega(ctx, c.id, i), falta = faltaEntrega(ctx, c.id, i);
     if (falta > 0.99) out.push({ carga: c, i, e, total, pago, falta });
   }));
   return out;
@@ -157,8 +177,10 @@ function classificarEntrada(m, ctx) {
   const abertas = entregasAbertas(ctx).filter(x => { const d = String(x.carga.data).slice(0, 10); return d >= addDias(dia, -120) && d <= addDias(dia, 10); });
   const rCli = acharRegra(ctx, m);
   const recCli = cat(ctx, "Recebimento de cliente");
-  if (rCli && !rCli.cliente) return { categoria_id: rCli.categoria_id, escopo: rCli.escopo, pendente: false };
-  const nomeCli = rCli && rCli.cliente ? rCli.cliente : m.contraparte;
+  const porRegra = rCli && !rCli.cliente ? { categoria_id: rCli.categoria_id, escopo: rCli.escopo, pendente: false } : null;
+  // regra sem cliente decide sozinha, menos depósito da maquininha (pode ser de uma entrega: confere antes)
+  if (porRegra && !ehMaquininha(m)) return porRegra;
+  const nomeCli = rCli && rCli.cliente ? rCli.cliente : porRegra ? "" : m.contraparte;
   const cand = abertas.map(x => {
     const nome = parecidos(x.e.cliente, nomeCli) + (rCli && norm(rCli.cliente) === norm(x.e.cliente) ? 5 : 0);
     const valorIgual = Math.abs(m.valor - x.falta) <= Math.max(1, x.falta * 0.01);
@@ -167,14 +189,39 @@ function classificarEntrada(m, ctx) {
   }).filter(x => x.nome > 0 || x.valorIgual).sort((a, b) => b.pontos - a.pontos || String(a.carga.data).localeCompare(String(b.carga.data)));
   const melhor = cand[0];
   const unico = melhor && (!cand[1] || cand[1].pontos < melhor.pontos);
-  // nome bate e o valor cabe: liga sozinho
-  if (melhor && unico && melhor.nome > 0 && melhor.cabe) {
-    return { categoria_id: recCli && recCli.id, escopo: "empresa", carga_id: melhor.carga.id, entrega_idx: melhor.i, pendente: false };
+  const ligar = x => ({ categoria_id: recCli && recCli.id, escopo: "empresa", carga_id: x.carga.id, entrega_idx: x.i, pendente: false });
+  // nome bate e o valor cabe: liga sozinho (pagamento parcial também; o resto fica como "falta")
+  if (melhor && unico && melhor.nome > 0 && melhor.cabe) return ligar(melhor);
+  const porNome = cand.filter(x => x.nome > 0);
+  if (!porNome.length) {
+    // ninguém pelo nome, mas o valor é exatamente o que falta numa entrega só
+    const iguais = abertas.filter(x => Math.abs(m.valor - x.falta) <= 0.5);
+    if (iguais.length === 1) return ligar(iguais[0]);
+    // depósito da maquininha: o que faltava menos a taxa (0,5% a 6,5%)
+    if (!iguais.length && ehMaquininha(m)) {
+      const comTaxa = abertas.filter(x => m.valor >= x.falta * (1 - TAXA_MAX) && m.valor <= x.falta * 0.995);
+      if (comTaxa.length === 1) return ligar(comTaxa[0]);
+      if (comTaxa.length > 1) return { categoria_id: null, escopo: null, pendente: true, candidatos: comTaxa.slice(0, 4) };
+    }
   }
+  if (porRegra) return porRegra;
   return { categoria_id: null, escopo: null, pendente: true, candidatos: cand.slice(0, 4) };
 }
 
-function classificar(m, ctx) { return m.tipo === "entrada" ? classificarEntrada(m, ctx) : classificarSaida(m, ctx); }
+/* o mesmo Pix chegando duas vezes (comprovante + notificação, minutos de diferença): o segundo fica de fora */
+function mesmoPix(m, ctx) {
+  if (!["notificacao", "comprovante"].includes(m.origem)) return null;
+  const t = typeof m.quando === "number" ? m.quando : new Date(m.quando).getTime();
+  return ctx.movs.find(x => x.id !== m.id && !x.ignorado && x.tipo === m.tipo && x.origem !== m.origem && x.origem !== "levantamento"
+    && Math.abs(+x.valor - m.valor) < 0.01 && Math.abs(new Date(x.quando).getTime() - t) <= 30 * 60000
+    && (!x.contraparte || !m.contraparte || parecidos(x.contraparte, m.contraparte) > 0)) || null;
+}
+
+function classificar(m, ctx) {
+  const dup = mesmoPix(m, ctx);
+  if (dup) return { categoria_id: dup.categoria_id || null, escopo: dup.escopo || null, ignorado: true, pendente: false, duplicata: dup.id };
+  return m.tipo === "entrada" ? classificarEntrada(m, ctx) : classificarSaida(m, ctx);
+}
 
 /* esse item do extrato já veio pela notificação? (pra não duplicar)
    cada notificação só "absorve" um item do extrato */
@@ -401,6 +448,6 @@ function liquido(ctx, de, ate, eu) {
     pendentes: rp.pendentes };
 }
 
-const api = { valorFora, recebidosFora, liquido, ganhosMotorista, viagem, milCompra, jaAnotados, definirFornecedores, contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, entregasAbertas, totalEntrega, pagoEntrega, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
+const api = { valorFora, recebidosFora, liquido, ganhosMotorista, viagem, milCompra, jaAnotados, definirFornecedores, contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, mesmoPix, entregasAbertas, totalEntrega, pagoEntrega, taxaEntrega, faltaEntrega, ehMaquininha, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Regras = api;
 })(typeof window !== "undefined" ? window : globalThis);

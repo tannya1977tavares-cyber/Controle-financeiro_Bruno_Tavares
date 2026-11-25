@@ -54,7 +54,14 @@ public class AvisosBancosPlugin extends Plugin {
     @PluginMethod
     public void status(PluginCall call) {
         JSObject r = new JSObject();
-        r.put("liberado", NotificationManagerCompat.getEnabledListenerPackages(getContext()).contains(getContext().getPackageName()));
+        boolean liberado = NotificationManagerCompat.getEnabledListenerPackages(getContext()).contains(getContext().getPackageName());
+        r.put("liberado", liberado);
+        // se está liberado mas o Android desligou o leitor, pede pra ligar de novo
+        if (liberado) LeitorBancos.religar(getContext());
+        android.content.SharedPreferences p = getContext().getSharedPreferences("avisos_bancos", android.content.Context.MODE_PRIVATE);
+        r.put("conectado", p.getBoolean("conectado", false));
+        r.put("conectadoEm", p.getLong("conectado_em", 0));
+        r.put("ultimoAviso", p.getLong("ultimo_aviso", 0));
         call.resolve(r);
     }
 
@@ -63,6 +70,21 @@ public class AvisosBancosPlugin extends Plugin {
         Intent i = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         getContext().startActivity(i);
+        call.resolve();
+    }
+
+    /** Tela do Android pra deixar o app sem restrição de bateria (senão o leitor é desligado). */
+    @PluginMethod
+    public void abrirBateria(PluginCall call) {
+        try {
+            Intent i = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+        } catch (Exception e) {
+            Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getContext().getPackageName()));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+        }
         call.resolve();
     }
 
