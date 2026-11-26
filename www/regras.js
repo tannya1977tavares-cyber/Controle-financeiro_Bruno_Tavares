@@ -310,7 +310,7 @@ function ganhosMotorista(ctx, de, ate) {
   });
   return out;
 }
-const mesmoNome = (a, b) => { const x = norm(a), y = norm(b); return !!x && !!y && (x === y || x.split(" ")[0] === y || y.split(" ")[0] === x); };
+
 
 /* ---------- fichas ---------- */
 function diasUteis(de, ate) {
@@ -326,6 +326,13 @@ function ficha(ctx, p, de, ate) { return EQ.ficha(ctx, p, de, ate); }
 
 /* ---------- fornecedores ---------- */
 // quanto de tijolo foi comprado de cada cerâmica (custo da Tijolos) e quanto já foi pago
+/* a carga já saiu da cerâmica? Vale a situação marcada no app da Tijolos (Carregada ou Entregue).
+   Carga antiga sem situação: conta se a data já passou. */
+function jaSaiu(c, hoje) {
+  const st = norm(c.status);
+  if (st) return st === "carregada" || st === "entregue";
+  return String(c.data).slice(0, 10) <= (hoje || "9999");
+}
 function fornecedores(ctx, de, ate, hoje) {
   const out = {};
   Object.keys(FORNECEDORES).forEach(k => { out[k] = { chave: k, nome: FORNECEDORES[k], mil: 0, custo: 0, custoEntregue: 0, custoAgendado: 0, semCusto: [], cargas: [], medidas: {}, pagos: [], pago: 0 }; });
@@ -340,8 +347,10 @@ function fornecedores(ctx, de, ate, hoje) {
       if (!cu) f.semCusto.push({ c, e });
     });
     f.mil = r2(f.mil + milC); f.custo = r2(f.custo + custoC);
-    if (d <= hoje) f.custoEntregue = r2(f.custoEntregue + custoC); else f.custoAgendado = r2(f.custoAgendado + custoC);
-    f.cargas.push({ c, mil: r2(milC), custo: r2(custoC), futura: d > hoje });
+    // só entra na dívida o que o app da Tijolos marcou como Carregada ou Entregue; Agendada fica só nas estimativas
+    const saiu = jaSaiu(c, hoje);
+    if (saiu) f.custoEntregue = r2(f.custoEntregue + custoC); else f.custoAgendado = r2(f.custoAgendado + custoC);
+    f.cargas.push({ c, mil: r2(milC), custo: r2(custoC), futura: !saiu });
   });
   const tij = cat(ctx, "Compra de tijolo");
   ctx.movs.filter(m => m.tipo === "saida" && !m.ignorado && tij && m.categoria_id === tij.id).forEach(m => {
@@ -432,9 +441,9 @@ function liquido(ctx, de, ate, eu) {
   const grupo = (lista) => { const g = {}; lista.forEach(([nome, v]) => { g[nome] = r2((g[nome] || 0) + v); }); return Object.entries(g).map(([nome, v]) => ({ nome, v })).filter(x => x.v).sort((a, b) => b.v - a.v); };
   const nomeCat = m => (catId(ctx, m.categoria_id) || {}).nome || "Sem categoria";
   const rp = resumoPeriodo(ctx, de, ate);
-  const mot = ganhosMotorista(ctx, de, ate), meus = mot.filter(m => mesmoNome(m.nome, eu));
-  const equipe = n => (ctx.pessoas || []).some(p => mesmoNome(n, p.nome));
-  const motFora = mot.filter(m => !mesmoNome(m.nome, eu) && !equipe(m.nome));
+  // quem foi motorista: o mesmo critério da ficha dos funcionários (equipe.js), pra nunca contar a mesma viagem pra duas pessoas
+  const mot = ganhosMotorista(ctx, de, ate), dono = m => EQ.quem(m.nome, ctx.pessoas, eu) === "eu", meus = mot.filter(dono);
+  const motFora = mot.filter(m => !dono(m) && !EQ.quem(m.nome, ctx.pessoas, eu));
   let carregFora = 0;
   ctx.cargas.forEach(c => { const d = String(c.data).slice(0, 10); if (d < de || d > ate) return; const v = viagem(ctx, c); if (v.principal !== c.id) return; carregFora += RV.custosViagem(v, ctx.movs, ctx.cats, ctx.ajudantes).carregamento; });
   const salario = r2(meus.reduce((s, m) => s + m.valor, 0));
@@ -451,6 +460,6 @@ function liquido(ctx, de, ate, eu) {
     pendentes: rp.pendentes };
 }
 
-const api = { valorFora, recebidosFora, liquido, ganhosMotorista, viagem, milCompra, jaAnotados, definirFornecedores, contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, mesmoPix, entregasAbertas, totalEntrega, pagoEntrega, taxaEntrega, faltaEntrega, ehMaquininha, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
+const api = { jaSaiu, valorFora, recebidosFora, liquido, ganhosMotorista, viagem, milCompra, jaAnotados, definirFornecedores, contaQuePaga, contasAbertas, calendario, FORA, FORNECEDORES, fornecedorDoNome, fornecedores, norm, diaDe, horaDe, addDias, ymd, pd, segunda, LIMITE_DIESEL, DA_CARGA, classificar, classificarSaida, classificarEntrada, duplicado, mesmoPix, entregasAbertas, totalEntrega, pagoEntrega, taxaEntrega, faltaEntrega, ehMaquininha, alertas, cargasSemAjudante, resumoCarga, ficha, diasUteis, resumoPeriodo, acharPessoa };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Regras = api;
 })(typeof window !== "undefined" ? window : globalThis);

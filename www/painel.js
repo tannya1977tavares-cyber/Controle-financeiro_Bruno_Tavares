@@ -25,7 +25,7 @@ let MODO = "caixa";
 const definirModo = m => { MODO = m === "tijolo" ? "tijolo" : "caixa"; };
 const ehTijolo = nome => /^compra de tijolo/i.test(nome || "");
 function tijoloCarregado(ctx, de, ate) {
-  return r2(ctx.cargas.filter(c => { const d = String(c.data).slice(0, 10); return d >= de && d <= ate; }).reduce((s, c) => s + R.resumoCarga(ctx, c).tijolo, 0));
+  return r2(ctx.cargas.filter(c => { const d = String(c.data).slice(0, 10); return d >= de && d <= ate && R.jaSaiu(c, ate); }).reduce((s, c) => s + R.resumoCarga(ctx, c).tijolo, 0));
 }
 function empresa(ctx, de, ate, eu) {
   const e = R.liquido(ctx, de, ate, eu).empresa;
@@ -163,9 +163,9 @@ function composicao(f) {
 function extratoPessoa(ctx, p, de, ate) {
   const f = R.ficha(ctx, p, de, ate), cli = c => (c.entregas || []).map(e => e.cliente || "Sem nome").join(", ");
   const l = [];
-  f.ajud.forEach(o => l.push({ dia: String(o.c.data).slice(0, 10), tipo: "descarga", nome: "Descarga · " + cli(o.c), v: +o.x.valor }));
-  f.carreg.forEach(o => l.push({ dia: o.dia, tipo: "carregada", nome: "Carregada" + (o.com > 1 ? " (dividida por " + o.com + ")" : "") + " · " + cli(o.c), v: o.valor }));
-  f.motor.forEach(m => l.push({ dia: m.dia, tipo: "motorista", nome: "Motorista na " + m.papel + " · " + cli(m.c), v: m.valor }));
+  f.ajud.forEach(o => l.push({ dia: String(o.c.data).slice(0, 10), tipo: "descarga", nome: "Descarga · " + cli(o.c), v: +o.x.valor, cid: o.c.id }));
+  f.carreg.forEach(o => l.push({ dia: o.dia, tipo: "carregada", nome: "Carregada" + (o.com > 1 ? " (dividida por " + o.com + ")" : "") + " · " + cli(o.c), v: o.valor, cid: o.c.id }));
+  f.motor.forEach(m => l.push({ dia: m.dia, tipo: "motorista", nome: "Motorista na " + m.papel + " · " + cli(m.c), v: m.valor, cid: m.c.id }));
   if (p.tipo === "vendedor") f.dias.forEach(d => { if (f.faltas.includes(d)) return; const t = EQ.TURNOS[f.turnos[d]], peso = t ? t.peso : 1, v = r2(peso * (+p.salario_mes || 0) / EQ.DIAS_MES); if (v) l.push({ dia: d, tipo: "diaria", nome: "Diária" + (peso < 1 ? " (meio turno)" : ""), v }); });
   f.pix.forEach(m => l.push({ dia: R.diaDe(new Date(m.quando).getTime()), tipo: m.origem === "vale" ? "vale" : "pago", nome: (m.origem === "vale" ? "Vale" : "Pagamento") + (m.descricao ? " · " + m.descricao : m.banco ? " · " + m.banco : ""), v: -(+m.valor), id: m.id }));
   l.sort((a, b) => a.dia.localeCompare(b.dia) || b.v - a.v);
@@ -232,6 +232,26 @@ function partesCargas(ctx, mes) {
   const t = { tijolo: 0, gastos: 0, ajud: 0, carreg: 0, mot: 0, lucro: 0 };
   ctx.cargas.filter(c => String(c.data).slice(0, 7) === mes).forEach(c => { const r = R.resumoCarga(ctx, c); t.tijolo += r.tijolo; t.gastos += r.gastosTotal; t.ajud += r.ajudTotal; t.carreg += r.carregamento; t.mot += r.motoristaTotal; t.lucro += r.lucro; });
   return fatias([{ nome: "Tijolo (cerâmica)", v: r2(t.tijolo) }, { nome: "Lucro", v: r2(t.lucro) }, { nome: "Gastos da viagem", v: r2(t.gastos) }, { nome: "Descarga (ajudantes)", v: r2(t.ajud) }, { nome: "Carregamento", v: r2(t.carreg) }, { nome: "Motorista", v: r2(t.mot) }]);
+}
+
+/* ---------- saldo das contas ----------
+   ref = { nubank: {data, saldo}, ... }: o saldo conferido no fim do dia "data" (você corrige segurando o dedo).
+   Depois dele soma o que entrou e tira o que saiu naquela conta (lançamentos ignorados não contam).
+   Carteira física: o seu saldo + dinheiro recebido de cliente + lançamentos "À mão". */
+const CONTAS = [["nubank", "Nubank", /nubank|nu pagamentos/i], ["infinitepay", "InfinitePay", /infinite/i], ["carteira", "Carteira física", /m[aã]o|dinheiro|carteira|esp[eé]cie/i]];
+function saldos(ctx, ref, hoje) {
+  const out = {};
+  CONTAS.forEach(([k, nome, re]) => {
+    const r = (ref || {})[k] || null, desde = r ? String(r.data).slice(0, 10) : null; let v = r ? +r.saldo || 0 : 0, n = 0;
+    if (r) {
+      // saldo digitado agora (r.em): conta o que veio depois daquela hora; saldo de fim de dia: conta a partir do dia seguinte
+      const depois = m => r.em ? new Date(m.quando).getTime() > new Date(r.em).getTime() : R.diaDe(new Date(m.quando).getTime()) > desde;
+      ctx.movs.forEach(m => { if (m.ignorado || !re.test(m.banco || "")) return; const d = R.diaDe(new Date(m.quando).getTime()); if (!depois(m) || d > hoje) return; v += m.tipo === "entrada" ? +m.valor : -m.valor; n++; });
+      if (k === "carteira") Object.entries(ctx.fin || {}).forEach(([key, s]) => { if (s.situacao !== "dinheiro" || !s.pago_em) return; const d = String(s.pago_em).slice(0, 10); if (d <= desde || d > hoje) return; const [cid, i] = key.split("|"), x = R.valorFora(ctx, cid, +i); if (x > 0) { v += x; n++; } });
+    }
+    out[k] = { chave: k, nome, saldo: r2(v), conferido: desde, n, temRef: !!r };
+  });
+  return out;
 }
 
 /* ---------- desenhos (SVG) ---------- */
@@ -365,6 +385,6 @@ function barrasH(itens, cor) {
     '<div class="bar" style="width:' + Math.max(2, Math.abs(x.v) / mx * 100) + "%;background:" + (x.v < 0 ? "var(--danger)" : cor || "var(--brand)") + '"></div></div>').join("");
 }
 
-const api = { equipe, pessoaSemanas, composicao, extratoPessoa, pessoalMeses, pessoalDias, pessoal, movimentos, agenda, partesCargas, graficoLinha, barrasDuplas, definirModo, empresa, tijoloCarregado, semana, ritmo, semanas, fatias, gastos, meses, receber, contas, cargas, ceramicas, graficoSemana, pizza, legenda, barrasSemanas, barrasMeses, barrasH, curto, mesCurto, addMes, DIAS };
+const api = { saldos, CONTAS, equipe, pessoaSemanas, composicao, extratoPessoa, pessoalMeses, pessoalDias, pessoal, movimentos, agenda, partesCargas, graficoLinha, barrasDuplas, definirModo, empresa, tijoloCarregado, semana, ritmo, semanas, fatias, gastos, meses, receber, contas, cargas, ceramicas, graficoSemana, pizza, legenda, barrasSemanas, barrasMeses, barrasH, curto, mesCurto, addMes, DIAS };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Painel = api;
 })(typeof window !== "undefined" ? window : globalThis);
