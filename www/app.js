@@ -788,7 +788,7 @@ function cartaoGastos(grande) {
 function vPainel() {
   const v = L.pnVista || "";
   P.definirModo(L.pnModo);
-  const vistas = { gastos: vPnGastos, semanas: vPnSemanas, meses: vPnMeses, receber: vPnReceber, contas: vPnContas, cargas: vPnCargas, ceramicas: vPnCeramicas };
+  const vistas = { gastos: vPnGastos, semanas: vPnSemanas, meses: vPnMeses, receber: vPnReceber, contas: vPnContas, cargas: vPnCargas, ceramicas: vPnCeramicas, movs: vPnMovs, agenda: vPnAgenda, pessoas: vPnPessoas, eu: vPnEu, excel: vPnExcel };
   if (v === "gastos-pes") { L.pnVista = "gastos"; L.pnGEsc = "pessoal"; L.pnGPer = "mes"; L.mes = hojeS().slice(0, 7); salvarLocal(); return vPnGastos(); }
   if (vistas[v]) return vistas[v]();
   const cx = ctx(), hoje = hojeS(), eu = euNome(), meta = metaSemana(), seg = L.pnSemana || R.segunda(hoje), atual = seg === R.segunda(hoje);
@@ -825,8 +825,7 @@ function vPainel() {
   h += cartaoGastos(false);
   const ss = P.semanas(cx, R.segunda(hoje), 8, hoje, eu), bat = ss.filter(x => x.liquido >= meta).length, melhor = ss.reduce((a, b) => (b.liquido > a.liquido ? b : a), ss[0]);
   h += '<section class="card" data-acao="pn-vista" data-v="semanas" style="cursor:pointer"><div class="row"><h2 style="margin:0">Últimas 8 semanas</h2><span class="muted">ver ›</span></div><p class="muted">Bateu a meta em ' + bat + " de 8 · melhor semana " + brl0(melhor.liquido) + " (" + diaCurto(melhor.de) + ")</p>" + P.barrasSemanas(ss, meta) + "</section>";
-  h += '<section class="card"><h2>Abrir o app</h2><p class="hint">O Painel é só pra olhar. Pra lançar, responder e conferir, abra o app.</p><div class="btns"><button class="pri" data-acao="pn-ir" data-t="inicio" style="flex:1 1 100%">Abrir o app</button>' +
-    [["cargas", "Cargas"], ["movs", "Movimentos"], ["semana", "Agenda"], ["pessoas", "Pessoas"], ["planilhas", "Excel"]].map(([t, n]) => '<button class="small" data-acao="pn-ir" data-t="' + t + '">' + n + "</button>").join("") + "</div></section>";
+  h += menuAreasPn();
   return h;
 }
 
@@ -859,18 +858,149 @@ function vPnContas() {
     '<div class="btns"><button class="pri" data-acao="ir-contas">Ver as contas</button></div>';
 }
 
-function vPnCargas() {
-  const cg = P.cargas(ctx(), L.mes);
-  return pnVoltar("Cargas") + navMes("mes") + '<section class="card"><div class="stats"><div class="stat"><div class="l">Vendeu</div><div class="v">' + brl0(cg.venda) + '</div></div><div class="stat"><div class="l">Lucro das cargas</div><div class="v ' + (cg.lucro >= 0 ? "pos" : "neg") + '">' + brl0(cg.lucro) + '</div></div><div class="stat"><div class="l">Margem</div><div class="v">' + pct(cg.margem) + '</div></div><div class="stat"><div class="l">Milheiros</div><div class="v">' + String(cg.mil).replace(".", ",") + "</div></div></div>" +
-    '<p class="hint">' + cg.lista.length + " carga(s) · lucro médio por carga " + brl0(cg.media) + ". Lucro da carga = venda − tijolo − gastos da viagem − ajudantes − carregamento − motorista.</p></section>" +
-    '<section class="card"><h2>Lucro de cada carga</h2>' + (cg.lista.length ? P.barrasH(cg.lista.map(x => ({ nome: diaCurto(x.c.data) + " · " + esc(x.c.entregas.map(e => e.cliente || "Sem nome").join(", ")), v: x.lucro, cls: x.lucro >= 0 ? "pos" : "neg", sub: "venda " + brl0(x.venda) + " · margem " + pct(x.margem) + " · " + String(x.mil).replace(".", ",") + " mil" })), "var(--s3)") : '<p class="muted">Nenhuma carga neste mês.</p>') + "</section>";
-}
-
 function vPnCeramicas() {
   const ce = P.ceramicas(ctx(), hojeS());
   return pnVoltar("Cerâmicas") + '<section class="card"><div class="row"><b>Deve agora (tudo que já foi entregue)</b><b class="neg" style="font-size:22px">' + brl0(ce.total) + "</b></div></section>" +
     '<section class="card">' + (ce.lista.length ? P.barrasH(ce.lista.map(f => ({ nome: esc(f.nome), v: f.deveAgora, cls: f.deveAgora > 0 ? "neg" : "pos", sub: "tijolo " + brl0(f.custoEntregue) + " · já pago " + brl0(f.pago) + (f.custoAgendado ? " · agendado " + brl0(f.custoAgendado) : "") })), "var(--s5)") : '<p class="muted">Nada a pagar às cerâmicas.</p>') + "</section>" +
     '<div class="btns"><button class="pri" data-acao="pn-ir" data-t="cargas" data-forn="1">Ver Fornecedores</button></div>';
+}
+
+/* ---------- painéis de cada área (os botões do menu do Painel) ---------- */
+const AREAS = [["cargas", "Cargas", "cargas"], ["movs", "Movimentos", "movs"], ["agenda", "Agenda", "semana"], ["pessoas", "Pessoas", "pessoas"], ["excel", "Excel", "planilhas"]];
+const irApp = (t, nome) => '<div class="btns"><button class="pri" data-acao="pn-ir" data-t="' + t + '">Abrir ' + nome + " no app</button></div>";
+const legPn = l => '<div class="pn-legl">' + l.map(([c, t]) => '<span><i style="background:' + c + '"></i>' + t + "</span>").join("") + "</div>";
+const statPn = (l, v, cls, st) => '<div class="stat"><div class="l">' + l + '</div><div class="v ' + (cls || "") + '"' + (st ? ' style="' + st + '"' : "") + ">" + v + "</div></div>";
+/* período dos painéis: semana (‹ ›), mês (‹ ›) ou tudo/ano */
+function periodoPn(chave, ops, ini) {
+  const per = L[chave] || "mes", seg = L.pnSemana || R.segunda(hojeS()), hoje = hojeS(), lim = a => (a < hoje ? a : hoje);
+  let de, ate, nav = "", rot;
+  if (per === "semana") { de = seg; ate = lim(addDias(seg, 6)); rot = diaCurto(seg) + " a " + diaCurto(addDias(seg, 6)); nav = '<div class="nav"><button class="small" data-acao="pn-semana" data-n="-7" aria-label="Semana anterior">‹</button><b>' + rot + '</b><button class="small" data-acao="pn-semana" data-n="7" aria-label="Próxima semana">›</button></div>'; }
+  else if (per === "mes") { de = L.mes + "-01"; ate = lim(fimMes(L.mes)); rot = mesLabel(L.mes); nav = navMes("mes"); }
+  else if (per === "ano") { de = hoje.slice(0, 4) + "-01-01"; ate = hoje; rot = "Ano de " + hoje.slice(0, 4); }
+  else { de = ini || "2026-01-01"; ate = hoje; rot = "Desde " + diaCurto(de) + "/" + de.slice(2, 4); }
+  return { per, de, ate: ate < de ? de : ate, rot, html: filtrosPn("pn-per", per, ops).replace(/data-acao="pn-per"/g, 'data-acao="pn-per" data-k="' + chave + '"') + nav };
+}
+
+function menuAreasPn() {
+  const eu = euNome();
+  return '<section class="card"><h2>Painéis</h2><p class="hint">Cada área com os gráficos dela. Pra lançar e responder, abra o app.</p><div class="pn-menu">' +
+    AREAS.map(([v, n]) => '<button data-acao="pn-vista" data-v="' + v + '">' + ICON_PN[v] + "<span>" + n + "</span></button>").join("") +
+    '<button data-acao="pn-vista" data-v="eu">' + ICON_PN.eu + "<span>" + esc(eu.split(" ")[0]) + " (você)</span></button></div>" +
+    '<div class="btns"><button class="pri" data-acao="pn-ir" data-t="inicio" style="flex:1 1 100%">Abrir o app</button></div></section>';
+}
+const svgI = d => '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + d + "</svg>";
+const ICON_PN = {
+  cargas: svgI('<path d="M3 7h11v9H3zM14 10h4l3 3v3h-7"/><circle cx="7" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/>'),
+  movs: svgI('<path d="M7 4v16M3 8l4-4 4 4M17 20V4M13 16l4 4 4-4"/>'),
+  agenda: svgI('<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>'),
+  pessoas: svgI('<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.3c3 .2 5.5 2.6 5.5 5.7"/>'),
+  excel: svgI('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8l8 8M16 8l-8 8"/>'),
+  eu: svgI('<circle cx="12" cy="8" r="3.6"/><path d="M4.5 20.5c0-4 3.4-7 7.5-7s7.5 3 7.5 7"/>')
+};
+
+/* Cargas: lucro, margem e para onde vai o dinheiro das cargas */
+function vPnCargas() {
+  const cx = ctx(), cg = P.cargas(cx, L.mes), pz = P.partesCargas(cx, L.mes), hoje = hojeS();
+  const ult = []; for (let k = 5; k >= 0; k--) { const m = P.addMes(L.mes, -k), x = P.cargas(cx, m); ult.push({ nome: P.mesCurto(m), entrou: x.venda, saiu: x.lucro, atual: !k }); }
+  return pnVoltar("Cargas") + navMes("mes") + '<section class="card"><div class="stats">' + statPn("Vendeu", brl0(cg.venda)) + statPn("Lucro das cargas", brl0(cg.lucro), cg.lucro >= 0 ? "pos" : "neg") + statPn("Margem", pct(cg.margem)) + statPn("Milheiros", String(cg.mil).replace(".", ",")) + "</div>" +
+    '<p class="hint">' + cg.lista.length + " carga(s) · lucro médio por carga " + brl0(cg.media) + ". Lucro da carga = venda − tijolo − gastos da viagem − ajudantes − carregamento − motorista (anotados no app da Tijolos).</p></section>" +
+    '<section class="card"><h2>Para onde vai o dinheiro das vendas</h2><div class="pn-pz-box">' + P.pizza(pz, 190, "vendas") + "</div>" + P.legenda(pz) + "</section>" +
+    '<section class="card"><h2>Últimos 6 meses</h2>' + legPn([["var(--s1)", "Vendeu"], ["var(--ok)", "Lucro"]]) + P.barrasDuplas(ult, "var(--s1)", "var(--ok)", "vendeu", "lucro") + "</section>" +
+    '<section class="card"><h2>Lucro de cada carga</h2>' + (cg.lista.length ? P.barrasH(cg.lista.map(x => ({ nome: diaCurto(x.c.data) + " · " + esc(x.c.entregas.map(e => e.cliente || "Sem nome").join(", ")), v: x.lucro, cls: x.lucro >= 0 ? "pos" : "neg", sub: "venda " + brl0(x.venda) + " · margem " + pct(x.margem) + " · " + String(x.mil).replace(".", ",") + " mil" + (String(x.c.data).slice(0, 10) > hoje ? " · agendada" : "") })), "var(--s3)") : '<p class="muted">Nenhuma carga neste mês.</p>') + "</section>" + irApp("cargas", "Cargas");
+}
+
+/* Movimentos: o que entrou e saiu, por banco, e o que falta responder */
+function vPnMovs() {
+  const pp = periodoPn("pnMPer", [["semana", "Semana"], ["mes", "Mês"]]), m = P.movimentos(ctx(), pp.de, pp.ate);
+  const bancos = m.bancos.map(b => ({ nome: b.nome, entrou: b.entrou, saiu: b.saiu }));
+  return pnVoltar("Movimentos") + pp.html +
+    '<section class="card"><div class="stats">' + statPn("Entrou", brl0(m.entrou), "pos") + statPn("Saiu", brl0(m.saiu), "neg") + statPn("Sobrou", brl0(m.entrou - m.saiu), m.entrou - m.saiu >= 0 ? "pos" : "neg") + statPn("Lançamentos", m.n) + "</div>" +
+    (m.pendentes ? '<div class="btns"><button class="danger" data-acao="pn-ir" data-t="inicio">' + m.pendentes + " esperando sua resposta ›</button></div>" : '<p class="hint">Nada esperando resposta.</p>') + "</section>" +
+    '<section class="card"><h2>Por banco</h2>' + legPn([["var(--ok)", "Entrou"], ["var(--danger)", "Saiu"]]) + (bancos.length ? P.barrasDuplas(bancos, "var(--ok)", "var(--danger)", "entrou", "saiu") + bancos.map(b => '<div class="row" style="padding:4px 0;border-top:1px solid var(--line)"><span class="grow">' + esc(b.nome) + '</span><span class="pos">+' + brl0(b.entrou) + '</span>&nbsp;<span class="neg">−' + brl0(b.saiu).replace("-", "") + "</span></div>").join("") : '<p class="muted">Nenhum movimento.</p>') + "</section>" +
+    '<section class="card"><h2>Gastos: empresa × pessoal</h2>' + P.barrasH([{ nome: "Tijolos Tavares", v: m.empresa }, { nome: "Bruno pessoal", v: m.pessoal }], "var(--s2)") + "</section>" +
+    '<section class="card"><h2>Maiores entradas</h2>' + (m.maioresEntradas.map(linhaMovHtml).join("") || '<p class="muted">Nenhuma.</p>') + "</section>" +
+    '<section class="card"><h2>Maiores saídas</h2>' + (m.maioresSaidas.map(linhaMovHtml).join("") || '<p class="muted">Nenhuma.</p>') + "</section>" +
+    '<section class="card"><h2>De onde vieram os lançamentos</h2>' + P.legenda(P.fatias(m.origens)).replace(/R\$\s?/g, "") + (m.ignorados ? '<p class="hint">' + m.ignorados + " ignorado(s) (não contam).</p>" : "") + "</section>" + irApp("movs", "Movimentos");
+}
+
+/* Agenda: as próximas 2 semanas */
+function vPnAgenda() {
+  const hoje = hojeS(), a = P.agenda(ctx(), hoje, 14), mx = Math.max(1, ...a.dias.map(d => d.mil));
+  const barras = '<div class="pn-ag">' + a.dias.map(d => '<div class="pn-ag-d' + (d.dia === hoje ? " hoje" : "") + '" title="' + esc(diaCurto(d.dia) + ": " + d.cargas.length + " carga(s)") + '"><i style="height:' + (d.mil ? Math.max(8, d.mil / mx * 100) : 0) + '%"></i>' + (d.pagar ? '<b class="c"></b>' : "") + (d.receber ? '<b class="r"></b>' : "") + "<span>" + d.nome.slice(0, 1) + "<br>" + d.dia.slice(8, 10) + "</span></div>").join("") + "</div>";
+  const dias = a.dias.filter(d => d.cargas.length || d.contas.length || d.prazos.length);
+  return pnVoltar("Agenda") + '<p class="muted">Próximos 14 dias</p><section class="card"><div class="stats">' + statPn("Entregas", a.cargas + " carga(s)") + statPn("Milheiros", String(a.mil).replace(".", ",")) + statPn("A receber (prazo)", brl0(a.receber), "pos") + statPn("A pagar", brl0(a.pagar), "neg") + "</div>" + barras +
+    legPn([["var(--s1)", "Milheiros do dia"], ["var(--danger)", "Conta vence"], ["var(--ok)", "Cliente paga"]]) + "</section>" +
+    (dias.length ? dias.map(d => '<section class="card"><div class="row"><b>' + esc(cap(diaLongo(d.dia))) + "</b>" + (d.dia === hoje ? '<span class="chip">hoje</span>' : "") + "</div>" +
+      d.cargas.map(c => '<div class="row"><span class="grow trunc">🚚 ' + esc(c.entregas.map(e => (e.cliente || "Sem nome") + " " + String(+e.mil || 0).replace(".", ",") + " mil").join(" · ")) + "</span><b>" + brl0(c.entregas.reduce((t, e) => t + R.totalEntrega(e), 0)) + "</b></div>").join("") +
+      d.prazos.map(p => '<div class="row"><span class="grow trunc">Recebe de ' + esc(p.e.cliente || "Sem nome") + (p.vencido ? ' <span class="chip red">venceu ' + diaCurto(p.venc) + "</span>" : "") + '</span><b class="pos">' + brl0(p.falta) + "</b></div>").join("") +
+      d.contas.map(c => '<div class="row"><span class="grow trunc">Paga ' + esc(c.descricao || "conta") + '</span><b class="neg">' + brl0(c.valor) + "</b></div>").join("") + "</section>").join("") : '<section class="card"><p class="muted">Nada marcado nos próximos 14 dias.</p></section>') + irApp("semana", "a Agenda");
+}
+
+/* Pessoas: a equipe e, no topo, você */
+const corSaldo = s => s > 0.004 ? "pos" : s < -0.004 ? "neg" : "";
+const txtSaldo = s => s > 0.004 ? "A receber " + brl0(s) : s < -0.004 ? "Vale " + brl0(-s) : "Em dia";
+function vPnPessoas() {
+  if (L.pnPessoa) { const p = pessoaDe(L.pnPessoa); if (p) return vPnPessoa(p); L.pnPessoa = null; }
+  const pp = periodoPn("pnEqPer", [["semana", "Semana"], ["mes", "Mês"]]), eq = P.equipe(ctxPlan(), pp.de, pp.ate), eu = euNome(), lp = R.liquido(ctx(), pp.de, pp.ate, eu).pessoal;
+  const aRec = r2(eq.filter(x => x.saldo > 0).reduce((s, x) => s + x.saldo, 0)), vale = r2(eq.filter(x => x.saldo < 0).reduce((s, x) => s - x.saldo, 0));
+  const ativos = eq.filter(x => x.ganhou || x.recebeu);
+  return pnVoltar("Pessoas") + pp.html +
+    '<section class="card pn-eu" data-acao="pn-vista" data-v="eu"><div class="row"><b>' + esc(eu) + ' <span class="chip">você</span></b><span class="muted">abrir ›</span></div><div class="row"><span class="pos">Receitas ' + brl0(lp.entrou) + '</span><span class="neg">Despesas ' + brl0(lp.saiu) + '</span><b class="' + corSaldo(lp.liquido) + '">' + brl0(lp.liquido) + "</b></div></section>" +
+    '<section class="card"><div class="stats">' + statPn("Equipe ganhou", brl0(eq.reduce((s, x) => s + x.ganhou, 0)), "pos") + statPn("Você pagou", brl0(eq.reduce((s, x) => s + x.recebeu, 0)), "neg") + statPn("Eles têm a receber", brl0(aRec), "pos") + statPn("Vales em aberto", brl0(vale), "neg") + "</div>" +
+    '<p class="hint">Verde: o funcionário tem a receber. Vermelho: pegou vale ou adiantado a mais. O saldo é geral, desde o início dele.</p></section>' +
+    (ativos.length ? '<section class="card"><h2>Quem mais ganhou · ' + esc(pp.rot) + "</h2>" + P.barrasH(ativos.slice(0, 8).map(x => ({ nome: esc(x.p.nome), v: x.ganhou, cls: "pos", sub: x.servicos + " serviço(s) · recebeu " + brl0(x.recebeu), acao: "pn-pessoa", dados: ' data-p="' + x.p.id + '" style="cursor:pointer"' })), "var(--ok)") + "</section>" : "") +
+    '<section class="card"><h2>Toque no nome pra abrir</h2>' + eq.map(x => '<div class="pn-pes" data-acao="pn-pessoa" data-p="' + x.p.id + '"' + (x.p.ativo === false ? ' style="opacity:.55"' : "") + '><div class="grow"><b>' + esc(x.p.nome) + '</b><div class="muted" style="font-size:13px">' + (x.p.tipo === "vendedor" ? "Vendedor" : "Ajudante") + " · ganhou " + brl0(x.ganhou) + " · recebeu " + brl0(x.recebeu) + '</div></div><b class="' + corSaldo(x.saldo) + '">' + txtSaldo(x.saldo) + '</b><span class="muted">›</span></div>').join("") + "</section>" + irApp("pessoas", "Pessoas");
+}
+
+/* painel de um funcionário: tudo que ele fez e recebeu, com o saldo correndo */
+function vPnPessoa(p) {
+  const hoje = hojeS(), pp = periodoPn("pnPPer", [["semana", "Semana"], ["mes", "Mês"], ["tudo", "Tudo"]], p.inicio ? String(p.inicio).slice(0, 10) : null);
+  const cx = ctxPlan(), x = P.extratoPessoa(cx, p, pp.de, pp.ate), f = x.f, comp = P.composicao(f), sem = P.pessoaSemanas(cx, p, R.segunda(hoje), 8, hoje);
+  const cls = corSaldo(x.final), linhas = x.linhas.slice().reverse();
+  const tipos = { descarga: "Descarga", carregada: "Carregada", motorista: "Motorista", diaria: "Diária", vale: "Vale", pago: "Pagamento" };
+  return '<div class="btns"><button class="small" data-acao="pn-pessoa" data-p="">‹ Pessoas</button><button class="small" data-acao="pn-ficha" data-p="' + p.id + '">Abrir a ficha no app</button></div>' +
+    '<h1 style="margin-top:12px">' + esc(p.nome) + '</h1><p class="muted">' + (p.tipo === "vendedor" ? "Vendedor · " + brl0(p.salario_mes) + " por mês" : "Ajudante") + (p.inicio ? " · começou em " + diaCurto(p.inicio) : "") + "</p>" +
+    '<section class="card pn-saldo ' + cls + '"><div class="l">Saldo geral</div><div class="v">' + (x.final > 0.004 ? brl(x.final) : x.final < -0.004 ? "−" + brl(-x.final) : brl(0)) + '</div><div class="s">' + (x.final > 0.004 ? "Saldo de receita: " + esc(p.nome) + " tem a receber" : x.final < -0.004 ? "Saldo de vale: " + esc(p.nome) + " pegou a mais e está devendo" : "Tudo acertado") + "</div></section>" + pp.html +
+    '<section class="card"><div class="stats">' + statPn("Ganhou (receita)", brl(x.ganhou), "pos") + statPn("Recebeu", brl(x.recebeu), "neg") + statPn("Vales", brl(x.vales), "neg") + statPn("Serviços", f.ajud.length + f.carreg.length + f.motor.length + (p.tipo === "vendedor" ? " + " + String(f.diasTrab).replace(".", ",") + " dia(s)" : "")) + "</div>" +
+    (Math.abs(x.inicial) > 0.004 ? '<p class="hint">Vinha de antes: <b class="' + corSaldo(x.inicial) + '">' + txtSaldo(x.inicial) + "</b></p>" : "") + "</section>" +
+    '<section class="card"><h2>Últimas 8 semanas</h2>' + legPn([["var(--ok)", "Ganhou"], ["var(--danger)", "Recebeu"]]) + P.barrasDuplas(sem, "var(--ok)", "var(--danger)", "ganhou", "recebeu") + "</section>" +
+    (comp.total ? '<section class="card"><h2>De onde vem o que ganhou</h2><div class="pn-pz-box">' + P.pizza(comp, 170, "ganhou") + "</div>" + P.legenda(comp) + "</section>" : "") +
+    '<section class="card"><h2>Extrato · ' + esc(pp.rot) + '</h2><p class="hint">Mais novo em cima. Verde é o que ele ganhou, vermelho é o que recebeu ou pegou de vale. Embaixo de cada valor, o saldo dele depois daquela linha.</p>' +
+    (linhas.length ? linhas.map(l => { const det = l.nome.includes("·") ? l.nome.replace(/^[^·]*·\s?/, "") : l.nome.replace(/^(Diária|Vale|Pagamento)\s?/, "");
+      return '<div class="pn-ext ' + (l.v >= 0 ? "g" : "r") + '"><div class="grow"><div><span class="d">' + diaCurto(l.dia) + '</span> <span class="chip ' + (l.v >= 0 ? "green" : "red") + '">' + tipos[l.tipo] + "</span></div>" + (det ? '<div class="muted trunc" style="font-size:13px;margin-top:2px">' + esc(det) + "</div>" : "") + '</div><div class="vv"><b class="' + (l.v >= 0 ? "pos" : "neg") + '">' + (l.v >= 0 ? "+" : "−") + brl(Math.abs(l.v)) + '</b><span class="sd ' + corSaldo(l.saldo) + '">saldo ' + brl0(l.saldo) + "</span></div></div>"; }).join("") : '<p class="muted">Nada neste período.</p>') + "</section>" +
+    conferenciaHtml(f, pp.de, pp.ate);
+}
+
+/* seu painel: receitas e despesas pessoais, mais completo */
+function vPnEu() {
+  const hoje = hojeS(), eu = euNome(), pp = periodoPn("pnEuPer", [["semana", "Semana"], ["mes", "Mês"], ["ano", "Ano"]]), cx = ctx();
+  const x = P.pessoal(cx, pp.de, pp.ate, eu), ms = P.pessoalMeses(cx, hoje.slice(0, 7), 6, hoje, eu);
+  const dias = pp.per === "ano" ? null : P.pessoalDias(cx, pp.de, pp.per === "semana" ? addDias(pp.de, 6) : fimMes(pp.de.slice(0, 7)), hoje, eu);
+  const emp = P.empresa(cx, pp.de, pp.ate, eu), taxa = x.p.entrou ? x.p.saiu / x.p.entrou : 0, nDias = Math.max(1, Math.round((pd(pp.ate) - pd(pp.de)) / 864e5) + 1);
+  return pnVoltar(esc(eu)) + '<p class="muted">Suas receitas e despesas pessoais (fora da Tijolos Tavares)</p>' + pp.html +
+    '<section class="card pn-saldo ' + corSaldo(x.p.liquido) + '"><div class="l">Sobrou pra você · ' + esc(pp.rot) + '</div><div class="v">' + brl0(x.p.liquido) + '</div><div class="s"><span class="pos">Receitas ' + brl0(x.p.entrou) + '</span> · <span class="neg">Despesas ' + brl0(x.p.saiu) + "</span></div></section>" +
+    '<section class="card"><div class="stats">' + statPn("Salário de motorista", brl0(x.salario), "pos") + statPn("Gasto por dia", brl0(x.p.saiu / nDias), "neg") + statPn("Gastou da receita", pct(taxa), taxa > 1 ? "neg" : "") + statPn("Empresa no período", brl0(emp.liquido), emp.liquido >= 0 ? "pos" : "neg") + "</div>" +
+    (taxa > 1 ? '<p class="hint" style="color:var(--danger)">Gastou mais do que entrou no pessoal nesse período.</p>' : "") + "</section>" +
+    (dias ? '<section class="card"><h2>Sobra acumulada dia a dia</h2>' + P.graficoLinha(dias, "Sobra pessoal acumulada") + "</section>" : "") +
+    '<section class="card"><h2>Mês a mês</h2>' + legPn([["var(--ok)", "Receitas"], ["var(--danger)", "Despesas"]]) + P.barrasDuplas(ms.map(m => Object.assign({ atual: m.mes === hoje.slice(0, 7) }, m)), "var(--ok)", "var(--danger)", "receitas", "despesas") +
+    ms.slice().reverse().filter(m => m.entrou || m.saiu).map(m => '<div class="row" style="padding:4px 0;border-top:1px solid var(--line)"><span class="grow">' + esc(m.nome) + '</span><span class="pos">+' + brl0(m.entrou) + '</span>&nbsp;<span class="neg">−' + brl0(m.saiu).replace("-", "") + '</span>&nbsp;<b class="' + corSaldo(m.liquido) + '">' + brl0(m.liquido) + "</b></div>").join("") + "</section>" +
+    '<section class="card"><h2>Despesas por categoria</h2><div class="pn-pz-box">' + P.pizza(x.despesas, 190, "despesas") + "</div>" + P.legenda(x.despesas) + "</section>" +
+    '<section class="card"><h2>De onde vem a receita</h2>' + (x.receitas.total ? '<div class="pn-pz-box">' + P.pizza(x.receitas, 170, "receitas") + "</div>" + P.legenda(x.receitas) : '<p class="muted">Nenhuma receita pessoal nesse período.</p>') + "</section>" +
+    (x.viagens.length ? '<section class="card"><h2>Suas viagens de motorista</h2>' + x.viagens.slice().sort((a, b) => b.dia.localeCompare(a.dia)).map(m => '<div class="row"><span class="grow trunc">' + diaCurto(m.dia) + " · " + esc(m.papel) + " · " + esc(m.c.entregas.map(e => e.cliente || "Sem nome").join(", ")) + '</span><b class="pos">+' + brl(m.valor) + "</b></div>").join("") + '<div class="row" style="margin-top:6px"><b>Total</b><b class="pos">' + brl(x.salario) + "</b></div></section>" : "") +
+    '<section class="card"><h2>Maiores despesas</h2>' + (x.maiores.map(linhaMovHtml).join("") || '<p class="muted">Nenhuma.</p>') + "</section>" +
+    '<div class="btns"><button class="pri" data-acao="pn-ir" data-t="movs">Ver os movimentos no app</button></div>';
+}
+
+/* Excel: as planilhas que o app monta, com o que tem em cada uma */
+function vPnExcel() {
+  const hoje = hojeS(), ano = hoje.slice(0, 4), b = (q, t, d) => '<section class="card"><div class="row"><div class="grow"><b>' + t + '</b><div class="muted" style="font-size:13px">' + d + '</div></div><button class="small pri" data-acao="abrir-excel" data-q="' + q + '">' + (gerandoExcel === q ? "Montando…" : "Abrir") + "</button></div></section>";
+  const nm = D.movs.filter(m => !m.ignorado && String(m.quando).slice(0, 4) === ano).length;
+  return pnVoltar("Excel") + '<p class="muted">Cada planilha é montada na hora com os dados do app.</p>' +
+    b("geral", "Financeiro Tavares", "Resumo geral, movimentos e cargas de " + esc(mesLabel(L.mes))) +
+    b("gastos", "Controle de Gastos " + ano, nm + " lançamento(s) no ano, por categoria e mês") +
+    b("descarga", "Controle de Descarga", "Quem descarregou, carregou e foi motorista em " + esc(mesLabel(L.mes))) +
+    b("forn", "Controle de Fornecedores", "Quanto foi comprado e pago a cada cerâmica") +
+    b("manut", "Controle de Manutenções " + ano, "Manutenção do caminhão e da empresa") + irApp("planilhas", "o Excel");
 }
 
 /* perguntas do app em janela, por cima do Painel (igual o alerta de entrega) */
@@ -1129,7 +1259,10 @@ async function acao(a, ds, alvo) {
     case "semana": L.semana = addDias(L.semana, +ds.n); salvarLocal(); render(); return;
     case "liq-abrir": janelaLiquido(ds.q); return;
     /* painel */
-    case "pn-vista": L.pnVista = ds.v || ""; L.pnDia = null; salvarLocal(); render(); window.scrollTo(0, 0); return;
+    case "pn-vista": L.pnVista = ds.v || ""; L.pnDia = null; L.pnPessoa = null; salvarLocal(); render(); window.scrollTo(0, 0); return;
+    case "pn-pessoa": L.pnVista = "pessoas"; L.pnPessoa = ds.p || null; salvarLocal(); render(); window.scrollTo(0, 0); return;
+    case "pn-per": L[ds.k] = ds.v; if (ds.v === "semana" && !L.pnSemana) L.pnSemana = R.segunda(hojeS()); salvarLocal(); render(); return;
+    case "pn-ficha": L.tab = "pessoas"; L.pessoa = ds.p; msg = ""; salvarLocal(); render(); window.scrollTo(0, 0); return;
     case "pn-semana": L.pnSemana = addDias(L.pnSemana || R.segunda(hojeS()), +ds.n); L.pnDia = null; salvarLocal(); render(); return;
     case "pn-ir-semana": L.pnSemana = ds.d; L.pnVista = ""; L.pnDia = null; salvarLocal(); render(); window.scrollTo(0, 0); return;
     case "pn-dia": L.pnDia = L.pnDia === ds.d ? null : ds.d; render(); return;
@@ -1507,7 +1640,9 @@ function recarregarLogo() {
   clearTimeout(timerRec);
   timerRec = setTimeout(async () => {
     const a = document.activeElement;
-    if (modal.innerHTML || (a && /INPUT|SELECT|TEXTAREA/.test(a.tagName))) { recarregarLogo(); return; }
+    // pergunta/alerta automático aberto não segura a sincronia: se o Tijolos já respondeu, ela some sozinha
+    const soAviso = modal.querySelector("[data-pop]") || modal.querySelector(".sheet.red");
+    if ((modal.innerHTML && !soAviso) || (a && /INPUT|SELECT|TEXTAREA/.test(a.tagName))) { recarregarLogo(); return; }
     await carregar(); render();
   }, 800);
 }
