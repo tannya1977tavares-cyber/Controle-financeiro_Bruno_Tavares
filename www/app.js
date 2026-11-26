@@ -354,6 +354,7 @@ const ICON = {
   pessoas: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.2c3 .2 5.5 2.6 5.5 5.8"/>',
   semana: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   planilhas: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 3v18"/>',
+  painel: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   mais: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'
 };
 const TABS = [["inicio", "Início"], ["cargas", "Cargas"], ["movs", "Movimentos"], ["pessoas", "Pessoas"], ["semana", "Agenda"], ["planilhas", "Excel"]];
@@ -761,6 +762,138 @@ function vMais() {
     '<div class="btns"><button data-acao="lev-abrir">Abrir o levantamento</button><button data-acao="sair">Sair</button></div></section>';
 }
 
+/* ---------- painel: a tela que abre primeiro. Lucro da semana × meta, gastos em pizza e os outros indicadores ---------- */
+const P = window.Painel;
+const metaSemana = () => (+L.meta > 0 ? +L.meta : 3000);
+const pnVoltar = t => '<div class="btns"><button class="small" data-acao="pn-vista" data-v="">‹ Painel</button></div><h1 style="margin-top:12px">' + t + "</h1>";
+const pct = v => Math.round(v * 100) + "%";
+const filtrosPn = (acao, atual, ops) => '<div class="filtros">' + ops.map(([k, t]) => '<button aria-pressed="' + (atual === k) + '" data-acao="' + acao + '" data-v="' + k + '">' + t + "</button>").join("") + "</div>";
+function tilePn(vista, titulo, valor, sub, cls) {
+  return '<button class="pn-tile" data-acao="pn-vista" data-v="' + vista + '"><span class="l">' + titulo + '</span><span class="v ' + (cls || "") + '">' + valor + '</span><span class="s">' + sub + "</span></button>";
+}
+function periodoGastos() {
+  const per = L.pnGPer || "semana", seg = L.pnSemana || R.segunda(hojeS());
+  return per === "mes" ? { de: L.mes + "-01", ate: fimMes(L.mes), rot: mesLabel(L.mes) } : { de: seg, ate: addDias(seg, 6), rot: diaCurto(seg) + " a " + diaCurto(addDias(seg, 6)) };
+}
+function cartaoGastos(grande) {
+  const per = L.pnGPer || "semana", esc0 = L.pnGEsc || "empresa", p = periodoGastos(), f = P.gastos(ctx(), p.de, p.ate, euNome(), esc0);
+  return '<section class="card"' + (grande ? "" : ' data-acao="pn-vista" data-v="gastos" style="cursor:pointer"') + '><div class="row"><h2 style="margin:0">Para onde foi o dinheiro</h2>' + (grande ? "" : '<span class="muted">ver ›</span>') + "</div>" +
+    (grande ? filtrosPn("pn-gper", per, [["semana", "Semana"], ["mes", "Mês"]]) + filtrosPn("pn-gesc", esc0, [["empresa", "Tijolos Tavares"], ["pessoal", "Bruno pessoal"]]) + (per === "mes" ? navMes("mes") : '<div class="nav"><button class="small" data-acao="pn-semana" data-n="-7" aria-label="Semana anterior">‹</button><b>' + esc(p.rot) + '</b><button class="small" data-acao="pn-semana" data-n="7" aria-label="Próxima semana">›</button></div>')
+      : '<p class="muted">' + (esc0 === "empresa" ? "Gastos da Tijolos Tavares" : "Gastos pessoais") + " · " + esc(p.rot) + "</p>") +
+    '<div class="pn-pz-box">' + P.pizza(f, grande ? 210 : 150) + "</div>" + P.legenda(grande ? f : { total: f.total, fatias: f.fatias.slice(0, 5) }) +
+    (!grande && f.fatias.length > 5 ? '<p class="hint">Mais ' + (f.fatias.length - 5) + " categoria(s). Toque pra ver tudo.</p>" : "") +
+    (grande && esc0 === "empresa" ? '<p class="hint">São as mesmas despesas do lucro líquido: banco, carregamento pago fora e o seu salário de motorista.</p>' : "") + "</section>";
+}
+
+function vPainel() {
+  const v = L.pnVista || "";
+  const vistas = { gastos: vPnGastos, semanas: vPnSemanas, meses: vPnMeses, receber: vPnReceber, contas: vPnContas, cargas: vPnCargas, ceramicas: vPnCeramicas };
+  if (v === "gastos-pes") { L.pnVista = "gastos"; L.pnGEsc = "pessoal"; L.pnGPer = "mes"; L.mes = hojeS().slice(0, 7); salvarLocal(); return vPnGastos(); }
+  if (vistas[v]) return vistas[v]();
+  const cx = ctx(), hoje = hojeS(), eu = euNome(), meta = metaSemana(), seg = L.pnSemana || R.segunda(hoje), atual = seg === R.segunda(hoje);
+  const s = P.semana(cx, seg, hoje, eu), ant = P.semana(cx, addDias(seg, -7), hoje, eu), rt = P.ritmo(s, meta);
+  let status;
+  if (seg > hoje) status = "Essa semana ainda não começou.";
+  else if (rt.batida) status = '<b class="pos">Meta batida!</b> ' + brl0(rt.acima) + " acima da meta" + (atual && rt.resta ? ", e a semana ainda não acabou." : ".");
+  else if (atual) status = "Faltam <b>" + brl0(rt.falta) + "</b>" + (rt.resta ? " · dá " + brl0(rt.porDia) + " por dia nos " + rt.resta + " dia(s) que faltam" : "") + ".";
+  else status = "Ficou " + brl0(rt.falta) + " abaixo da meta.";
+  const sel = L.pnDia && s.dias.find(d => d.dia === L.pnDia && !d.futuro);
+  let h = '<section class="card pn-hero"><div class="row"><h2 style="margin:0">Lucro líquido da semana</h2><button class="small ghost" data-acao="pn-meta">Meta ' + brl0(meta) + "</button></div>" +
+    '<div class="nav"><button class="small" data-acao="pn-semana" data-n="-7" aria-label="Semana anterior">‹</button><b>' + diaCurto(seg) + " a " + diaCurto(addDias(seg, 6)) + '</b><button class="small" data-acao="pn-semana" data-n="7" aria-label="Próxima semana">›</button></div>' +
+    '<div class="pn-big"><span class="' + (s.total >= 0 ? "pos" : "neg") + '">' + brl0(s.total) + '</span><small>de ' + brl0(meta) + " · " + rt.pct + "%</small></div>" +
+    '<div class="pn-prog"><i style="width:' + Math.min(100, rt.pct) + '%"></i></div><p style="margin:8px 0 0">' + status + "</p>" +
+    (atual && rt.previsao != null && !rt.batida ? '<p class="hint">No ritmo de agora, a semana fecha em ' + brl0(rt.previsao) + (rt.previsao >= meta ? ": dá pra bater." : ".") + "</p>" : "") +
+    P.graficoSemana(s, meta, ant, sel ? sel.dia : null) +
+    '<div class="pn-legl"><span><i class="l1"></i>Esta semana</span><span><i class="l2"></i>Semana passada</span><span><i class="l3"></i>Meta</span></div>' +
+    (sel ? '<div class="card" style="margin:10px 0 0"><div class="row"><b>' + esc(cap(diaLongo(sel.dia))) + '</b><b class="' + (sel.liquido >= 0 ? "pos" : "neg") + '">' + brl0(sel.liquido) + '</b></div><p class="muted" style="margin:4px 0 0">Entrou ' + brl0(sel.entrou) + " · saiu " + brl0(sel.saiu) + " · acumulado " + brl0(sel.acum) + '</p><div class="btns"><button class="small" data-acao="pn-dia-movs" data-d="' + sel.dia + '">Ver os movimentos do dia</button></div></div>' : '<p class="hint">Toque num dia do gráfico pra ver o que entrou e saiu.</p>') +
+    '<div class="btns"><button class="small" data-acao="pn-tabela">Ver dia a dia</button><button class="small" data-acao="liq-abrir-pn">Por categoria</button></div>' +
+    (s.dias.some(d => !d.futuro) && R.resumoPeriodo(cx, seg, addDias(seg, 6)).pendentes ? '<p class="hint" style="color:var(--warn)">Tem movimento da semana esperando sua resposta: a linha fica certa depois que você responder.</p>' : "") + "</section>";
+
+  // indicadores rápidos
+  const mes = hoje.slice(0, 7), lm = R.liquido(cx, mes + "-01", hoje, eu), rc = P.receber(cx), ct = P.contas(cx, hoje, 6), cg = P.cargas(cx, mes), ce = P.ceramicas(cx, hoje);
+  h += '<h2 style="margin-top:16px">Visão geral</h2><div class="pn-tiles">' +
+    tilePn("meses", "Lucro de " + esc(mesLabel(mes).split(" ")[0].toLowerCase()), brl0(lm.empresa.liquido), "entrou " + brl0(lm.empresa.entrou) + " · saiu " + brl0(lm.empresa.saiu), lm.empresa.liquido >= 0 ? "pos" : "neg") +
+    tilePn("receber", "Falta receber", brl0(rc.total), rc.lista.length + " cliente(s)" + (rc.prazo ? " · " + brl0(rc.prazo) + " no prazo" : ""), "warnc") +
+    tilePn("contas", "Contas em 30 dias", brl0(ct.prox30), ct.vencidas ? '<span class="neg">' + brl0(ct.vencidas) + " vencidas</span>" : "nenhuma vencida", ct.vencidas ? "neg" : "") +
+    tilePn("cargas", "Cargas do mês", brl0(cg.lucro), cg.lista.length + " carga(s) · margem " + pct(cg.margem), cg.lucro >= 0 ? "pos" : "neg") +
+    tilePn("ceramicas", "Deve às cerâmicas", brl0(ce.total), ce.total > 0 ? esc(ce.lista.filter(f => f.deveAgora > 0).map(f => f.nome.replace(/^cer[aâ]mica\s+/i, "")).slice(0, 2).join(", ")) : "em dia", ce.total > 0 ? "neg" : "pos") +
+    tilePn("gastos-pes", "Bruno pessoal no mês", brl0(lm.pessoal.liquido), "gastou " + brl0(lm.pessoal.saiu), lm.pessoal.liquido >= 0 ? "pos" : "neg") + "</div>";
+
+  h += cartaoGastos(false);
+  const ss = P.semanas(cx, R.segunda(hoje), 8, hoje, eu), bat = ss.filter(x => x.liquido >= meta).length, melhor = ss.reduce((a, b) => (b.liquido > a.liquido ? b : a), ss[0]);
+  h += '<section class="card" data-acao="pn-vista" data-v="semanas" style="cursor:pointer"><div class="row"><h2 style="margin:0">Últimas 8 semanas</h2><span class="muted">ver ›</span></div><p class="muted">Bateu a meta em ' + bat + " de 8 · melhor semana " + brl0(melhor.liquido) + " (" + diaCurto(melhor.de) + ")</p>" + P.barrasSemanas(ss, meta) + "</section>";
+  h += '<section class="card"><h2>Abrir o app</h2><p class="hint">O Painel é só pra olhar. Pra lançar, responder e conferir, abra o app.</p><div class="btns"><button class="pri" data-acao="pn-ir" data-t="inicio" style="flex:1 1 100%">Abrir o app</button>' +
+    [["cargas", "Cargas"], ["movs", "Movimentos"], ["semana", "Agenda"], ["pessoas", "Pessoas"], ["planilhas", "Excel"]].map(([t, n]) => '<button class="small" data-acao="pn-ir" data-t="' + t + '">' + n + "</button>").join("") + "</div></section>";
+  return h;
+}
+
+function vPnGastos() { return pnVoltar("Gastos") + cartaoGastos(true); }
+
+function vPnSemanas() {
+  const hoje = hojeS(), meta = metaSemana(), ss = P.semanas(ctx(), R.segunda(hoje), 12, hoje, euNome()), bat = ss.filter(x => x.liquido >= meta).length;
+  const media = ss.length ? ss.slice(0, -1).reduce((t, x) => t + x.liquido, 0) / Math.max(1, ss.length - 1) : 0;
+  return pnVoltar("Semanas") + '<section class="card"><div class="stats"><div class="stat"><div class="l">Bateu a meta</div><div class="v">' + bat + ' de 12</div></div><div class="stat"><div class="l">Média por semana</div><div class="v ' + (media >= 0 ? "pos" : "neg") + '">' + brl0(media) + "</div></div></div>" + P.barrasSemanas(ss, meta) + '<p class="hint">Média sem contar a semana atual, que ainda não fechou. ✓ = bateu a meta de ' + brl0(meta) + ".</p></section>" +
+    '<section class="card"><h2>Semana a semana</h2>' + ss.slice().reverse().map(x => '<div class="row" data-acao="pn-ir-semana" data-d="' + x.de + '" style="cursor:pointer;padding:6px 0;border-top:1px solid var(--line)"><span class="grow">' + diaCurto(x.de) + " a " + diaCurto(x.ate) + (x.atual ? ' <span class="chip">atual</span>' : "") + '</span><span class="muted">+' + brl0(x.entrou) + " −" + brl0(x.saiu).replace("-", "") + '</span><b class="' + (x.liquido >= meta ? "pos" : x.liquido < 0 ? "neg" : "") + '">' + brl0(x.liquido) + (x.liquido >= meta ? " ✓" : "") + "</b></div>").join("") + "</section>";
+}
+
+function vPnMeses() {
+  const hoje = hojeS(), l = P.meses(ctx(), hoje.slice(0, 7), 6, hoje, euNome());
+  return pnVoltar("Mês a mês") + '<section class="card"><h2>Tijolos Tavares: entrou × saiu</h2><div class="pn-legl"><span><i style="background:var(--s1)"></i>Entrou</span><span><i style="background:var(--s2)"></i>Saiu</span></div>' + P.barrasMeses(l) + "</section>" +
+    '<section class="card"><h2>Quanto sobrou</h2>' + l.slice().reverse().map(m => '<div class="row" style="padding:6px 0;border-top:1px solid var(--line)"><span class="grow">' + esc(mesLabel(m.mes)) + '</span><span class="muted">+' + brl0(m.entrou) + " −" + brl0(m.saiu).replace("-", "") + '</span><b class="' + (m.liquido >= 0 ? "pos" : "neg") + '">' + brl0(m.liquido) + "</b></div>").join("") + '<p class="hint">O mês atual conta até hoje.</p></section>';
+}
+
+function vPnReceber() {
+  const rc = P.receber(ctx());
+  return pnVoltar("Quem está devendo") + '<section class="card"><div class="stats"><div class="stat"><div class="l">Falta receber</div><div class="v" style="color:var(--warn)">' + brl0(rc.total) + '</div></div><div class="stat"><div class="l">Com prazo combinado</div><div class="v">' + brl0(rc.prazo) + "</div></div></div></section>" +
+    '<section class="card">' + (rc.lista.length ? P.barrasH(rc.lista.map(x => ({ nome: esc(x.nome), v: x.falta, cls: "neg", sub: x.n + " entrega(s) · desde " + diaCurto(x.desde) + (x.venc ? " · prazo " + diaCurto(x.venc) : "") })), "var(--warn)") : '<p class="muted">Ninguém devendo. Tudo recebido.</p>') + "</section>" +
+    '<div class="btns"><button class="pri" data-acao="pn-ir" data-t="cargas">Ver nas Cargas</button></div>';
+}
+
+function vPnContas() {
+  const hoje = hojeS(), ct = P.contas(ctx(), hoje, 12), comV = ct.meses.filter(m => m.v > 0);
+  return pnVoltar("Contas a pagar") + '<section class="card"><div class="stats"><div class="stat"><div class="l">Vencidas</div><div class="v neg">' + brl0(ct.vencidas) + '</div></div><div class="stat"><div class="l">Próximos 30 dias</div><div class="v" style="color:var(--warn)">' + brl0(ct.prox30) + "</div></div></div>" + (ct.ultima ? '<p class="hint">A última conta cadastrada vence em ' + diaCurto(ct.ultima) + "/" + ct.ultima.slice(2, 4) + ".</p>" : "") + "</section>" +
+    '<section class="card"><h2>Por mês</h2>' + (comV.length ? P.barrasH(comV.map(m => ({ nome: esc(mesLabel(m.mes)), v: m.v, sub: esc(m.itens.slice(0, 3).map(c => c.descricao).join(", ")) + (m.itens.length > 3 ? " e mais " + (m.itens.length - 3) : "") })), "var(--s2)") : '<p class="muted">Nenhuma conta a pagar nos próximos meses.</p>') + "</section>" +
+    '<div class="btns"><button class="pri" data-acao="ir-contas">Ver as contas</button></div>';
+}
+
+function vPnCargas() {
+  const cg = P.cargas(ctx(), L.mes);
+  return pnVoltar("Cargas") + navMes("mes") + '<section class="card"><div class="stats"><div class="stat"><div class="l">Vendeu</div><div class="v">' + brl0(cg.venda) + '</div></div><div class="stat"><div class="l">Lucro das cargas</div><div class="v ' + (cg.lucro >= 0 ? "pos" : "neg") + '">' + brl0(cg.lucro) + '</div></div><div class="stat"><div class="l">Margem</div><div class="v">' + pct(cg.margem) + '</div></div><div class="stat"><div class="l">Milheiros</div><div class="v">' + String(cg.mil).replace(".", ",") + "</div></div></div>" +
+    '<p class="hint">' + cg.lista.length + " carga(s) · lucro médio por carga " + brl0(cg.media) + ". Lucro da carga = venda − tijolo − gastos da viagem − ajudantes − carregamento − motorista.</p></section>" +
+    '<section class="card"><h2>Lucro de cada carga</h2>' + (cg.lista.length ? P.barrasH(cg.lista.map(x => ({ nome: diaCurto(x.c.data) + " · " + esc(x.c.entregas.map(e => e.cliente || "Sem nome").join(", ")), v: x.lucro, cls: x.lucro >= 0 ? "pos" : "neg", sub: "venda " + brl0(x.venda) + " · margem " + pct(x.margem) + " · " + String(x.mil).replace(".", ",") + " mil" })), "var(--s3)") : '<p class="muted">Nenhuma carga neste mês.</p>') + "</section>";
+}
+
+function vPnCeramicas() {
+  const ce = P.ceramicas(ctx(), hojeS());
+  return pnVoltar("Cerâmicas") + '<section class="card"><div class="row"><b>Deve agora (tudo que já foi entregue)</b><b class="neg" style="font-size:22px">' + brl0(ce.total) + "</b></div></section>" +
+    '<section class="card">' + (ce.lista.length ? P.barrasH(ce.lista.map(f => ({ nome: esc(f.nome), v: f.deveAgora, cls: f.deveAgora > 0 ? "neg" : "pos", sub: "tijolo " + brl0(f.custoEntregue) + " · já pago " + brl0(f.pago) + (f.custoAgendado ? " · agendado " + brl0(f.custoAgendado) : "") })), "var(--s5)") : '<p class="muted">Nada a pagar às cerâmicas.</p>') + "</section>" +
+    '<div class="btns"><button class="pri" data-acao="pn-ir" data-t="cargas" data-forn="1">Ver Fornecedores</button></div>';
+}
+
+/* perguntas do app em janela, por cima do Painel (igual o alerta de entrega) */
+function mostrarPerguntaSePrecisar() {
+  if (modal.innerHTML || Date.now() - (L.pergFechado || 0) < 2 * 3600000) return;
+  const pend = D.movs.filter(m => m.pendente && !m.ignorado).sort((a, b) => msDe(a.quando) - msDe(b.quando));
+  const depois = '<div class="btns"><button data-acao="perg-depois">Responder depois</button>' + (pend.length > 1 ? '<button class="ghost small" data-acao="pn-ir" data-t="inicio">Ver todas no Início</button>' : "") + "</div>";
+  if (pend.length) { abrirJanela('<div data-pop="perg"><h2>Preciso de você' + (pend.length > 1 ? " (1 de " + pend.length + ")" : "") + "</h2>" + perguntaHtml(pend[0]) + depois + "</div>"); return; }
+  const aj = R.cargasSemAjudante(ctx(), hojeS(), L.desde);
+  if (aj.length) abrirJanela('<div data-pop="perg">' + ajudantesHtml(aj[0]) + depois + "</div>");
+}
+
+function janelaTabelaSemana() {
+  const seg = L.pnSemana || R.segunda(hojeS()), s = P.semana(ctx(), seg, hojeS(), euNome());
+  abrirJanela("<h2>Dia a dia · " + diaCurto(seg) + " a " + diaCurto(addDias(seg, 6)) + '</h2><table class="pn-tab"><thead><tr><th>Dia</th><th>Entrou</th><th>Saiu</th><th>No dia</th><th>Acumulado</th></tr></thead><tbody>' +
+    s.dias.map(d => "<tr" + (d.futuro ? ' class="muted"' : "") + "><td>" + d.nome + " " + diaCurto(d.dia) + "</td><td>" + (d.futuro ? "" : brl0(d.entrou)) + "</td><td>" + (d.futuro ? "" : brl0(d.saiu)) + '</td><td class="' + (d.liquido >= 0 ? "pos" : "neg") + '">' + (d.futuro ? "" : brl0(d.liquido)) + "</td><td><b>" + (d.futuro ? "" : brl0(d.acum)) + "</b></td></tr>").join("") +
+    '</tbody></table><p class="hint">Meta da semana: ' + brl0(metaSemana()) + '.</p><div class="btns"><button data-acao="fechar">Fechar</button></div>');
+}
+
+function janelaDiaMovs(dia) {
+  const l = D.movs.filter(m => !m.ignorado && !m.pendente && m.escopo === "empresa" && diaMov(m) === dia).sort((a, b) => msDe(a.quando) - msDe(b.quando));
+  const fora = R.recebidosFora(ctx()).filter(x => x.dia === dia && x.valor > 0);
+  abrirJanela("<h2>" + esc(cap(diaLongo(dia))) + '</h2><p class="muted">Movimentos da Tijolos Tavares</p>' + (l.length || fora.length ? l.map(linhaMovHtml).join("") + fora.map(linhaForaHtml).join("") : '<p class="muted">Nada neste dia.</p>') +
+    '<p class="hint">O lucro do dia também desconta o carregamento pago fora do banco e o seu salário de motorista, quando tem carga.</p><div class="btns"><button data-acao="fechar">Fechar</button></div>');
+}
+
 function vLogin() {
   return '<section class="card" style="margin-top:24px"><h2>Entrar</h2><p class="muted">Use o mesmo acesso de administrador do app da Tijolos Tavares.</p><form id="login"><div class="field"><label for="lg-email">E-mail</label><input id="lg-email" type="email" autocomplete="username" value="bruno@tijolostavares.app"></div><div class="field"><label for="lg-senha">Senha</label><input id="lg-senha" type="password" autocomplete="current-password"></div>' + (erro ? '<div class="errmsg">' + esc(erro) + "</div>" : "") + '<div class="btns"><button class="pri" type="submit">Entrar</button></div></form></section>';
 }
@@ -771,10 +904,15 @@ function render() {
   nav.hidden = false; syncbtn.hidden = false; document.getElementById("cfgbtn").hidden = false; syncbtn.textContent = sincronizando ? "Atualizando…" : "Atualizar";
   const nPend = D.movs.filter(m => m.pendente && !m.ignorado).length + R.alertas(ctx(), Date.now(), L.desde).length + R.cargasSemAjudante(ctx(), hojeS(), L.desde).length;
   document.getElementById("tabs").innerHTML = TABS.map(([k, t]) => '<button data-tab="' + k + '"' + (L.tab === k ? ' aria-current="page"' : "") + ">" + svg(k) + t + (k === "inicio" && nPend ? '<span class="badge">' + nPend + "</span>" : "") + "</button>").join("");
+  if (modal.querySelector("[data-pop]")) fecharJanela(); // a pergunta respondida sai; a próxima aparece depois de desenhar
+  const bb = document.getElementById("brandbtn");
+  bb.innerHTML = L.tab === "painel" && !L.pnVista ? "Financeiro Tavares" : svg("painel") + "Painel";
+  bb.classList.toggle("pill", !(L.tab === "painel" && !L.pnVista));
   const topo = (erro ? '<div class="errmsg" role="alert">' + esc(erro) + "</div>" : "") + (msg ? '<div class="okmsg" role="status">' + esc(msg) + "</div>" : "");
-  main.innerHTML = topo + ({ inicio: vInicio, cargas: vCargas, movs: vMovs, pessoas: vPessoas, semana: vAgenda, planilhas: vPlanilhas, mais: vMais, lev: vLev })[L.tab]();
+  main.innerHTML = topo + ({ inicio: vInicio, cargas: vCargas, movs: vMovs, pessoas: vPessoas, semana: vAgenda, planilhas: vPlanilhas, mais: vMais, lev: vLev, painel: vPainel })[L.tab]();
   document.getElementById("cfgbtn").setAttribute("aria-pressed", L.tab === "mais");
   if (L.tab === "inicio") mostrarAlertasSePrecisar();
+  if (L.tab === "painel") { mostrarAlertasSePrecisar(); mostrarPerguntaSePrecisar(); }
 }
 
 /* ---------- janelas ---------- */
@@ -968,8 +1106,8 @@ async function acao(a, ds, alvo) {
   const m = ds.id ? movDe(ds.id) : null;
   switch (a) {
     case "fechar": fecharJanela(); return;
-    case "fechar-fundo": if (alvo.classList.contains("sheet-bg")) { if (modal.querySelector(".sheet.red")) { L.alertaFechado = Date.now(); salvarLocal(); } fecharJanela(); } return;
-    case "fechar-alertas": L.alertaFechado = Date.now(); salvarLocal(); fecharJanela(); return;
+    case "fechar-fundo": if (alvo.classList.contains("sheet-bg")) { if (modal.querySelector(".sheet.red")) { L.alertaFechado = Date.now(); salvarLocal(); } const eraPop = modal.querySelector("[data-pop]"); if (eraPop) { L.pergFechado = Date.now(); salvarLocal(); } fecharJanela(); if (!eraPop && L.tab === "painel") mostrarPerguntaSePrecisar(); } return;
+    case "fechar-alertas": L.alertaFechado = Date.now(); salvarLocal(); fecharJanela(); if (L.tab === "painel") mostrarPerguntaSePrecisar(); return;
     case "abrir-alertas": janelaAlertas(); return;
     case "liberar": if (Avisos) await Avisos.abrirAjustes(); return;
     case "info-app": if (Avisos) await Avisos.abrirInfoDoApp(); return;
@@ -977,6 +1115,20 @@ async function acao(a, ds, alvo) {
     case "mes": case "mes-inicio": L.mes = addMes(L.mes, +ds.n); salvarLocal(); render(); return;
     case "semana": L.semana = addDias(L.semana, +ds.n); salvarLocal(); render(); return;
     case "liq-abrir": janelaLiquido(ds.q); return;
+    /* painel */
+    case "pn-vista": L.pnVista = ds.v || ""; L.pnDia = null; salvarLocal(); render(); window.scrollTo(0, 0); return;
+    case "pn-semana": L.pnSemana = addDias(L.pnSemana || R.segunda(hojeS()), +ds.n); L.pnDia = null; salvarLocal(); render(); return;
+    case "pn-ir-semana": L.pnSemana = ds.d; L.pnVista = ""; L.pnDia = null; salvarLocal(); render(); window.scrollTo(0, 0); return;
+    case "pn-dia": L.pnDia = L.pnDia === ds.d ? null : ds.d; render(); return;
+    case "pn-dia-movs": janelaDiaMovs(ds.d); return;
+    case "pn-tabela": janelaTabelaSemana(); return;
+    case "liq-abrir-pn": L.semana = L.pnSemana || R.segunda(hojeS()); salvarLocal(); janelaLiquido("empresa"); return;
+    case "pn-gper": L.pnGPer = ds.v; salvarLocal(); render(); return;
+    case "pn-gesc": L.pnGEsc = ds.v; salvarLocal(); render(); return;
+    case "pn-meta": abrirJanela('<h2>Meta de lucro da semana</h2><p class="hint">Lucro líquido da Tijolos Tavares que você quer fazer de segunda a domingo.</p><div class="field"><label for="pn-meta-v">Meta (R$)</label><input id="pn-meta-v" inputmode="decimal" value="' + String(metaSemana()).replace(".", ",") + '"></div><div class="btns"><button class="pri" data-acao="pn-meta-ok">Salvar</button><button data-acao="fechar">Cancelar</button></div>'); return;
+    case "pn-meta-ok": { const v = parseValor(valorDe("pn-meta-v")); if (!(v > 0)) { alert("Coloque o valor da meta."); return; } L.meta = r2(v); salvarLocal(); fecharJanela(); break; }
+    case "pn-ir": fecharJanela(); L.tab = ds.t; L.pessoa = null; if (ds.forn) L.vistaCargas = "forn"; msg = ""; salvarLocal(); render(); window.scrollTo(0, 0); return;
+    case "perg-depois": L.pergFechado = Date.now(); salvarLocal(); fecharJanela(); return;
     case "filtro": L.filtro = ds.f; salvarLocal(); render(); return;
     case "editar": if (m) janelaEditar(m); return;
     case "vale-novo": janelaVale(ds.p); return;
@@ -1273,7 +1425,7 @@ async function acao(a, ds, alvo) {
     default: return;
   }
   render();
-  if (msg) setTimeout(() => { msg = ""; if (L.tab === "inicio" || L.tab === "movs") render(); }, 3500);
+  if (msg) setTimeout(() => { msg = ""; if (L.tab === "inicio" || L.tab === "movs" || L.tab === "painel") render(); }, 3500);
 }
 
 async function desfazerPagamento(cid, i) {
@@ -1302,6 +1454,7 @@ document.addEventListener("click", e => {
   if (ignorarClique) { ignorarClique = false; e.preventDefault(); return; }
   const nova = Aparencia.clique(e.target);
   if (nova) { sb.rpc("salvar_aparencia", { a: nova }).then(() => {}); if (D.perfil) D.perfil.aparencia = nova; render(); return; }
+  if (e.target.closest("#brandbtn")) { if (!D.perfil) return; fecharJanela(); abrirPainel(); render(); window.scrollTo(0, 0); return; }
   if (e.target.closest("#cfgbtn")) { L.tab = L.tab === "mais" ? "inicio" : "mais"; L.pessoa = null; msg = ""; salvarLocal(); render(); window.scrollTo(0, 0); return; }
   const t = e.target.closest("[data-tab]");
   if (t) { L.tab = t.dataset.tab; if (L.tab !== "pessoas") L.pessoa = null; msg = ""; salvarLocal(); render(); window.scrollTo(0, 0); return; }
@@ -1322,7 +1475,16 @@ document.addEventListener("submit", async e => {
   await entrar(data.user);
 });
 document.getElementById("syncbtn").addEventListener("click", () => { erro = ""; sincronizar(false); render(); });
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && D.perfil) { sincronizar(true); pegarCompartilhados(); } });
+/* abrir o app (ou voltar depois de mais de 30 minutos fora) cai no Painel, na semana atual */
+function abrirPainel() { L.tab = "painel"; L.pnVista = ""; L.pnDia = null; L.pessoa = null; L.pnSemana = R.segunda(hojeS()); msg = ""; salvarLocal(); }
+let saiuEm = 0;
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") { saiuEm = Date.now(); return; }
+  if (document.visibilityState === "visible" && D.perfil) {
+    if (saiuEm && Date.now() - saiuEm > 30 * 60000 && !modal.innerHTML && L.tab !== "lev") abrirPainel();
+    sincronizar(true); pegarCompartilhados();
+  }
+});
 if (Avisos && Avisos.addListener) { try { Avisos.addListener("compartilhado", () => pegarCompartilhados()); } catch (e) {} }
 
 /* ---------- sincronia: mudou no Tijolos (ou em outro celular), aparece aqui sozinho ---------- */
@@ -1346,6 +1508,7 @@ async function entrar(user) {
   const { data } = await sb.from("profiles").select("*").eq("id", user.id).single();
   if (!data || !data.admin) { await sb.auth.signOut({ scope: "local" }); erro = "Esse app é só pro administrador."; render(); return; }
   D.perfil = data; erro = "";
+  abrirPainel();
   main.innerHTML = '<div class="carregando">Carregando…</div>';
   Aparencia.aplicar(data.aparencia);
   await carregar(); render(); ouvirMudancas();
