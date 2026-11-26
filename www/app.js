@@ -115,6 +115,8 @@ function completarCustos(C) {
 }
 
 /* ---------- sessão: se o login cair (ex.: saiu no outro app), pede pra entrar de novo em vez de seguir sem salvar ---------- */
+// erro de rede → "confira a internet"; erro do banco (regra, campo) → mostra o motivo, pra não parecer falta de internet
+const falhou = (e, o) => { const t = String((e && (e.message || e.details)) || ""); return !e || !e.code || /fetch|network|timeout|abort/i.test(t) ? "Não deu pra " + o + ". Confira a internet." : "Não deu pra " + o + ": o banco recusou (" + t.slice(0, 120) + ")."; };
 const ehErroSessao = e => !!e && (e.status === 401 || /jwt|token|not authenticated|permission denied/i.test(String(e.message || e.code || "")) || e.code === "42501" || e.code === "PGRST301");
 async function sessaoCaiu() {
   if (!D.perfil) return;
@@ -296,13 +298,13 @@ async function conferirPagamento(cid, i, dia) {
 async function situacaoEntrega(cid, i, situacao, vencimento, pagoEm, valor) {
   if (situacao === "aberto") {
     const r = await sb.from("fin_entregas").delete().eq("carga_id", cid).eq("idx", i);
-    if (r.error) { erro = "Não deu pra salvar. Confira a internet."; render(); return; }
+    if (r.error) { erro = falhou(r.error, "salvar"); render(); return; }
     delete D.fin[cid + "|" + i]; await marcarTijolos(cid, i, "A receber", false); await agendarLembretes(); return;
   }
   const pago = R.FORA.includes(situacao);
   const row = { carga_id: cid, idx: i, situacao, pago_em: pago ? (pagoEm || hojeS()) : null, vencimento: vencimento || null, valor: pago && valor > 0 ? valor : null, atualizado_em: new Date().toISOString() };
   const r = await sb.from("fin_entregas").upsert(row);
-  if (r.error) { erro = "Não deu pra salvar. Confira a internet."; render(); return; }
+  if (r.error) { erro = falhou(r.error, "salvar"); render(); return; }
   D.fin[cid + "|" + i] = row;
   if (pago) await marcarTijolos(cid, i, "Pago", true);
   if (situacao === "prazo") await marcarTijolos(cid, i, "Fiado", false);
@@ -1020,7 +1022,7 @@ function janelaSaldo(k) {
 async function salvarSaldo(k, v) {
   const novo = Object.assign({}, D.saldos, { [k]: { data: hojeS(), saldo: r2(v), em: new Date().toISOString() } });
   const r = await sb.from("config").upsert({ chave: "saldos", dados: novo }, { onConflict: "chave" });
-  if (r.error) { erro = "Não deu pra salvar o saldo. Confira a internet."; return false; }
+  if (r.error) { erro = falhou(r.error, "salvar o saldo"); return false; }
   D.saldos = novo; return true;
 }
 
@@ -1294,7 +1296,7 @@ async function reclassificarPendentes() {
 
 async function atualizarMov(m, up) {
   const r = await sb.from("fin_movimentos").update(up).eq("id", m.id);
-  if (r.error) { erro = "Não deu pra salvar. Confira a internet."; return false; }
+  if (r.error) { erro = falhou(r.error, "salvar"); return false; }
   Object.assign(m, up); erro = ""; return true;
 }
 
@@ -1361,7 +1363,7 @@ async function acao(a, ds, alvo) {
       const r = await sb.from("fin_movimentos").upsert({ chave, origem: "vale", quando: new Date(y, mo - 1, d, 12, 0).toISOString(), tipo: "saida", valor: val, contraparte: pe.nome, texto: "Vale antigo (antes do sistema)", banco: "Dinheiro",
         categoria_id: cf ? cf.id : null, escopo: "empresa", pessoa_id: pid, obs: obs || null, pendente: false, ignorado: false }, { onConflict: "chave", ignoreDuplicates: true }).select();
       alvo.disabled = false;
-      if (r.error) { if (ehErroSessao(r.error)) { await sessaoCaiu(); return; } const el = document.getElementById("vl-msg"); if (el) el.textContent = "Não deu pra salvar. Confira a internet."; return; }
+      if (r.error) { if (ehErroSessao(r.error)) { await sessaoCaiu(); return; } const el = document.getElementById("vl-msg"); if (el) el.textContent = falhou(r.error, "salvar"); return; }
       if (!(r.data || []).length) { const el = document.getElementById("vl-msg"); if (el) el.textContent = "Esse vale já estava lançado (mesma pessoa, dia, valor e observação). Não lancei de novo."; return; }
       D.movs.push(r.data[0]); msg = "Vale de " + brl(val) + " lançado na ficha de " + pe.nome + ".";
       if (filaComp.length || compAtual) proximoComprovante(); else fecharJanela();
@@ -1444,7 +1446,7 @@ async function acao(a, ds, alvo) {
       if (!m) return;
       if (alvo.textContent !== "Toque de novo pra apagar") { alvo.textContent = "Toque de novo pra apagar"; return; }
       const r = await sb.from("fin_movimentos").delete().eq("id", m.id);
-      if (r.error) { erro = "Não deu pra apagar. Confira a internet."; break; }
+      if (r.error) { erro = falhou(r.error, "apagar"); break; }
       D.movs = D.movs.filter(x => x !== m); fecharJanela(); msg = "Apagado."; break;
     }
     case "criar-mov": {
@@ -1565,7 +1567,7 @@ async function acao(a, ds, alvo) {
       const row = { chave: "lev|" + Date.now() + Math.random().toString(36).slice(2, 6), origem: "manual", quando: new Date(y, mo - 1, dd, 12, 0).toISOString(), tipo: "saida", valor: v, contraparte: desc, texto: "Levantamento", banco: "À mão",
         categoria_id: c.id, escopo: pes ? "empresa" : c.escopo, pessoa_id: pes, carga_id: cargaAuto({ quando: new Date(y, mo - 1, dd, 12).toISOString() }, c.id), fornecedor: c.nome.startsWith("Compra de tijolo") ? R.fornecedorDoNome(desc) : null, pendente: false };
       const r = await sb.from("fin_movimentos").insert(row).select().single();
-      if (r.error) { erro = "Não deu pra salvar. Confira a internet."; break; }
+      if (r.error) { erro = falhou(r.error, "salvar"); break; }
       D.movs.push(r.data); L.levDia = dia; L.levCat = c.id; salvarLocal(); msg = "Gasto de " + brl(v) + " lançado.";
       render(); const el = document.getElementById("lv-valor"); if (el) el.focus(); return;
     }
