@@ -166,7 +166,9 @@ function extratoPessoa(ctx, p, de, ate) {
   f.ajud.forEach(o => l.push({ dia: String(o.c.data).slice(0, 10), tipo: "descarga", nome: "Descarga · " + cli(o.c), v: +o.x.valor, cid: o.c.id }));
   f.carreg.forEach(o => l.push({ dia: o.dia, tipo: "carregada", nome: "Carregada" + (o.com > 1 ? " (dividida por " + o.com + ")" : "") + " · " + cli(o.c), v: o.valor, cid: o.c.id }));
   f.motor.forEach(m => l.push({ dia: m.dia, tipo: "motorista", nome: "Motorista na " + m.papel + " · " + cli(m.c), v: m.valor, cid: m.c.id }));
-  if (p.tipo === "vendedor") f.dias.forEach(d => { if (f.faltas.includes(d)) return; const t = EQ.TURNOS[f.turnos[d]], peso = t ? t.peso : 1, v = r2(peso * (+p.salario_mes || 0) / EQ.DIAS_MES); if (v) l.push({ dia: d, tipo: "diaria", nome: "Diária" + (peso < 1 ? " (meio turno)" : ""), v }); });
+  if (+p.salario_mes > 0) f.dias.forEach(d => { if (f.faltas.includes(d)) return; const t = EQ.TURNOS[f.turnos[d]], peso = t ? t.peso : 1, v = r2(peso * (+p.salario_mes || 0) / EQ.DIAS_MES); if (v) l.push({ dia: d, tipo: "diaria", nome: "Diária" + (peso < 1 ? " (meio turno)" : ""), v }); });
+  if (f.comissao) f.vendas.forEach(c => { const v = r2((c.entregas || []).reduce((t, e) => t + R.totalEntrega(e), 0) * (+p.comissao_pct || 0) / 100); if (v) l.push({ dia: String(c.data).slice(0, 10), tipo: "comissao", nome: "Comissão · " + cli(c), v, cid: c.id }); });
+  if (f.acerto) l.push({ dia: p.inicio ? String(p.inicio).slice(0, 10) : de, tipo: "acerto", nome: "Acerto" + (p.acerto_obs ? " · " + p.acerto_obs : ""), v: f.acerto });
   f.pix.forEach(m => l.push({ dia: R.diaDe(new Date(m.quando).getTime()), tipo: m.origem === "vale" ? "vale" : "pago", nome: (m.origem === "vale" ? "Vale" : "Pagamento") + (m.descricao ? " · " + m.descricao : m.banco ? " · " + m.banco : ""), v: -(+m.valor), id: m.id }));
   l.sort((a, b) => a.dia.localeCompare(b.dia) || b.v - a.v);
   const ini = r2(f.saldo - l.reduce((t, x) => t + x.v, 0)); // o que já vinha de antes do período

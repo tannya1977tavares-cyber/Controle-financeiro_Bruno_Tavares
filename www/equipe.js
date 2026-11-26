@@ -77,7 +77,7 @@
       const ganhoAjud = ajud.reduce((s, o) => s + +o.x.valor, 0);
       // diárias do vendedor: dia sem marcação vale inteiro; meio turno vale meia; "não trabalhei" ou falta marcada pelo Bruno não vale
       let diarias = 0, faltas = [], dias = [], diasTrab = 0; const turnos = {};
-      if (p.tipo === "vendedor" && ini <= b) {
+      if (+p.salario_mes > 0 && ini <= b) { // só ganha salário se estiver no cadastro
         dias = diasUteis(ini, b);
         faltas = (ctx.faltas || []).filter(f => f.pessoa_id === p.id && dia(f.dia) >= ini && dia(f.dia) <= b).map(f => dia(f.dia));
         (ctx.presencas || []).filter(x => x.pessoa_id === p.id && dia(x.dia) >= ini && dia(x.dia) <= b).forEach(x => { turnos[dia(x.dia)] = x.turno; });
@@ -97,10 +97,13 @@
       const pix = (ctx.movs || []).filter(m => m.tipo === "saida" && !m.ignorado && m.pessoa_id === p.id && ehPagamento(ctx, m) && diaMov(m) <= b && (diaMov(m) >= ini || (tudo && ehVale(m))));
       const vales = pix.filter(ehVale);
       const recebeu = pix.reduce((s, m) => s + +m.valor, 0);
-      const vendas = p.tipo === "vendedor" ? (ctx.cargas || []).filter(c => norm(c.vendedor) === norm(p.nome) && dia(c.data) >= ini && dia(c.data) <= b) : [];
+      const vendas = (p.tipo === "vendedor" || +p.comissao_pct > 0) ? (ctx.cargas || []).filter(c => norm(c.vendedor) === norm(p.nome) && dia(c.data) >= ini && dia(c.data) <= b) : [];
+      const vendido = r2(vendas.reduce((s, c) => s + (c.entregas || []).reduce((t, e) => t + totalEntrega(e), 0), 0));
+      const comissao = r2(vendido * (+p.comissao_pct || 0) / 100);
+      // acerto: valor fixo que o Bruno coloca no cadastro (ex.: salário/comissão de antes do app); entra uma vez, no início
+      const acerto = (!p.inicio || a <= dia(p.inicio)) ? r2(+p.acerto || 0) : 0;
       return { ajud, ganhoAjud: r2(ganhoAjud), motor, ganhoMot: r2(ganhoMot), carreg, ganhoCarreg: r2(ganhoCarreg), dias, turnos, diasTrab, faltas, diarias: r2(diarias),
-        ganhou: r2(ganhoAjud + diarias + ganhoMot + ganhoCarreg), pix, recebeu: r2(recebeu), vales, totalVales: r2(vales.reduce((s, m) => s + +m.valor, 0)), vendas,
-        vendido: r2(vendas.reduce((s, c) => s + (c.entregas || []).reduce((t, e) => t + totalEntrega(e), 0), 0)) };
+        comissao, acerto, ganhou: r2(ganhoAjud + diarias + ganhoMot + ganhoCarreg + comissao + acerto), pix, recebeu: r2(recebeu), vales, totalVales: r2(vales.reduce((s, m) => s + +m.valor, 0)), vendas, vendido };
     };
     const periodo = calc(de, ate), geral = calc(p.inicio ? dia(p.inicio) : de, ate, true);
     // saldo > 0: o Bruno deve pra ele; saldo < 0: ele recebeu adiantado (está devendo)
@@ -125,10 +128,11 @@
   function resumoSemana(ctx, p, de, ate) {
     const f = ficha(ctx, p, de, ate), cf = conferir(f, ctx.lancamentos, de, ate), l = [];
     l.push("Resumo da semana " + dm(de) + " a " + dm(ate) + " · " + p.nome);
-    if (p.tipo === "vendedor") l.push("Diárias: " + String(f.diasTrab).replace(".", ",") + " dia(s) = " + brl(f.diarias));
+    if (+p.salario_mes > 0) l.push("Diárias: " + String(f.diasTrab).replace(".", ",") + " dia(s) = " + brl(f.diarias));
     if (f.ajud.length) l.push("Descargas: " + f.ajud.length + " = " + brl(f.ganhoAjud));
     if (f.carreg.length) l.push("Carregadas: " + f.carreg.length + " = " + brl(f.ganhoCarreg));
     if (f.motor.length) l.push("Motorista: " + f.motor.length + " viagem(ns) = " + brl(f.ganhoMot));
+    if (f.comissao) l.push("Comissão: " + brl(f.comissao));
     l.push("Ganhou na semana: " + brl(f.ganhou));
     l.push("Recebeu na semana: " + brl(f.recebeu));
     l.push(saldoTexto(f.saldo) + " (saldo geral)");
