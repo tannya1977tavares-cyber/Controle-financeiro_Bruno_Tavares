@@ -45,7 +45,7 @@ if (!ler("fin-local", null)) salvarLocal(); // guarda a data de início na prime
 let D = vazio();
 function vazio() { return { perfil: null, cats: [], regras: [], pessoas: [], movs: [], cargas: [], admin: {}, fin: {}, ajudantes: [], info: {}, faltas: [], contas: [], cadastro: null, rels: [], viag: [], presencas: [], lancs: [] }; }
 let leitor = { conectado: true, ultimoAviso: 0 }, liberado = true, msg = "", erro = "", sincronizando = false, ultimaSync = null;
-const ctx = () => ({ cats: D.cats, regras: D.regras, pessoas: D.pessoas, movs: D.movs, cargas: D.cargas, admin: D.admin, fin: D.fin, ajudantes: D.ajudantes, info: D.info, faltas: D.faltas, contas: D.contas, viag: D.viag, presencas: D.presencas, lancamentos: D.lancs });
+const ctx = () => ({ eu: (D.perfil && D.perfil.nome) || "Bruno", cats: D.cats, regras: D.regras, pessoas: D.pessoas, movs: D.movs, cargas: D.cargas, admin: D.admin, fin: D.fin, ajudantes: D.ajudantes, info: D.info, faltas: D.faltas, contas: D.contas, viag: D.viag, presencas: D.presencas, lancamentos: D.lancs });
 const catDe = id => D.cats.find(c => c.id === id);
 const pessoaDe = id => D.pessoas.find(p => p.id === id);
 const cargaDe = id => D.cargas.find(c => c.id === id);
@@ -66,7 +66,7 @@ async function carregar() {
     sb.from("fin_cargas_info").select("*"),
     sb.from("fin_faltas").select("*"),
     sb.from("fin_contas").select("*").order("vencimento"),
-    sb.from("config").select("chave,dados").in("chave", ["cadastro", "custos"]),
+    sb.from("config").select("chave,dados").in("chave", ["cadastro", "custos", "saldos"]),
     sb.from("relatorios").select("*").order("numero", { ascending: false }),
     sb.from("profiles").select("*").eq("id", D.perfil.id).single(),
     sb.from("carga_viagem").select("*"),
@@ -86,7 +86,7 @@ async function carregar() {
   D.info = {}; q[8].data.forEach(i => { D.info[i.carga_id] = i; });
   D.faltas = q[9].data.map(f => ({ ...f, dia: String(f.dia).slice(0, 10) }));
   const cfgDe = k => ((q[11].data || []).find(x => x.chave === k) || {}).dados || null;
-  D.cadastro = cfgDe("cadastro"); D.custosCfg = cfgDe("custos");
+  D.cadastro = cfgDe("cadastro"); D.custosCfg = cfgDe("custos"); D.saldos = cfgDe("saldos") || {};
   if (D.cadastro) R.definirFornecedores(D.cadastro.fornecedores);
   D.rels = q[12].data || [];
   D.viag = (q[14] && !q[14].error && q[14].data) || [];
@@ -583,9 +583,9 @@ function vFicha(p) {
     (p.tipo === "vendedor" ? '<div class="row"><span>Diárias (' + String(f.diasTrab).replace(".", ",") + " dias)</span><b>" + brl(f.diarias) + "</b></div>" + (f.faltas.length ? '<p class="hint">Não atendeu: ' + f.faltas.sort().map(d => '<button class="small ghost" data-acao="falta" data-p="' + p.id + '" data-dia="' + d + '">' + diaCurto(d) + " ✕</button>").join(" ") + "</p>" : "") +
       '<div class="row"><span>Vendeu ' + f.vendas.length + " carga(s)</span><span class=\"muted\">" + brl0(f.vendido) + "</span></div>" : "") +
     (p.tipo === "vendedor" && Object.keys(f.turnos || {}).length ? '<p class="hint">Turnos que ele marcou: ' + Object.keys(f.turnos).sort().map(d => diaCurto(d) + " " + Equipe.TURNOS[f.turnos[d]].nome).join(" · ") + "</p>" : "") +
-    f.ajud.map(o => '<div class="row"><span>Ajudante na carga de ' + diaCurto(o.c.data) + "</span><b>" + brl(o.x.valor) + "</b></div>").join("") +
-    (f.carreg || []).map(o => '<div class="row"><span>Carregada · ' + diaCurto(o.dia) + (o.com > 1 ? " (÷" + o.com + ")" : "") + "</span><b>" + brl(o.valor) + "</b></div>").join("") +
-    (f.motor || []).map(m => '<div class="row"><span>Motorista na ' + m.papel + " · " + diaCurto(m.dia) + "</span><b>" + brl(m.valor) + "</b></div>").join("") +
+    f.ajud.map(o => '<div class="row" data-longo="pn-ed-desc" data-c="' + o.c.id + '" data-p="' + p.id + '"><span>Ajudante na carga de ' + diaCurto(o.c.data) + "</span><b>" + brl(o.x.valor) + "</b></div>").join("") +
+    (f.carreg || []).map(o => '<div class="row" data-longo="pn-ed-viag" data-c="' + o.c.id + '"><span>Carregada · ' + diaCurto(o.dia) + (o.com > 1 ? " (÷" + o.com + ")" : "") + "</span><b>" + brl(o.valor) + "</b></div>").join("") +
+    (f.motor || []).map(m => '<div class="row" data-longo="pn-ed-viag" data-c="' + m.c.id + '"><span>Motorista na ' + m.papel + " · " + diaCurto(m.dia) + "</span><b>" + brl(m.valor) + "</b></div>").join("") +
     '<div class="row" style="margin-top:8px"><b>Total no mês</b><b>' + brl(f.ganhou) + "</b></div></section>" +
     conferenciaHtml(f, de, ate) +
     '<section class="card"><h2>Vales antigos</h2><p class="hint">Dinheiro que ' + esc(p.nome) + ' pegou antes do app existir. Entra no saldo geral como dívida dele.</p>' +
@@ -820,7 +820,7 @@ function vPainel() {
     tilePn("contas", "Contas em 30 dias", brl0(ct.prox30), ct.vencidas ? '<span class="neg">' + brl0(ct.vencidas) + " vencidas</span>" : "nenhuma vencida", ct.vencidas ? "neg" : "") +
     tilePn("cargas", "Cargas do mês", brl0(cg.lucro), cg.lista.length + " carga(s) · margem " + pct(cg.margem), cg.lucro >= 0 ? "pos" : "neg") +
     tilePn("ceramicas", "Deve às cerâmicas", brl0(ce.total), ce.total > 0 ? esc(ce.lista.filter(f => f.deveAgora > 0).map(f => f.nome.replace(/^cer[aâ]mica\s+/i, "")).slice(0, 2).join(", ")) : "em dia", ce.total > 0 ? "neg" : "pos") +
-    tilePn("gastos-pes", "Bruno pessoal no mês", brl0(lm.pessoal.liquido), "gastou " + brl0(lm.pessoal.saiu), lm.pessoal.liquido >= 0 ? "pos" : "neg") + "</div>";
+    tilePn("gastos-pes", "Bruno pessoal no mês", brl0(lm.pessoal.liquido), "gastou " + brl0(lm.pessoal.saiu), lm.pessoal.liquido >= 0 ? "pos" : "neg") + "</div>" + saldosHtml();
 
   h += cartaoGastos(false);
   const ss = P.semanas(cx, R.segunda(hoje), 8, hoje, eu), bat = ss.filter(x => x.liquido >= meta).length, melhor = ss.reduce((a, b) => (b.liquido > a.liquido ? b : a), ss[0]);
@@ -959,15 +959,16 @@ function vPnPessoa(p) {
   const cls = corSaldo(x.final), linhas = x.linhas.slice().reverse();
   const tipos = { descarga: "Descarga", carregada: "Carregada", motorista: "Motorista", diaria: "Diária", vale: "Vale", pago: "Pagamento" };
   return '<div class="btns"><button class="small" data-acao="pn-pessoa" data-p="">‹ Pessoas</button><button class="small" data-acao="pn-ficha" data-p="' + p.id + '">Abrir a ficha no app</button></div>' +
-    '<h1 style="margin-top:12px">' + esc(p.nome) + '</h1><p class="muted">' + (p.tipo === "vendedor" ? "Vendedor · " + brl0(p.salario_mes) + " por mês" : "Ajudante") + (p.inicio ? " · começou em " + diaCurto(p.inicio) : "") + "</p>" +
+    '<h1 style="margin-top:12px" data-longo="editar-pessoa" data-p="' + p.id + '">' + esc(p.nome) + '</h1><p class="muted" data-longo="editar-pessoa" data-p="' + p.id + '">' + (p.tipo === "vendedor" ? "Vendedor · " + brl0(p.salario_mes) + " por mês" : f.avulso ? "Ajudante de fora · recebe na hora, não fica saldo" : "Ajudante · só ganha por serviço") + (p.inicio ? " · começou em " + diaCurto(p.inicio) : "") + "</p>" +
     '<section class="card pn-saldo ' + cls + '"><div class="l">Saldo geral</div><div class="v">' + (x.final > 0.004 ? brl(x.final) : x.final < -0.004 ? "−" + brl(-x.final) : brl(0)) + '</div><div class="s">' + (x.final > 0.004 ? "Saldo de receita: " + esc(p.nome) + " tem a receber" : x.final < -0.004 ? "Saldo de vale: " + esc(p.nome) + " pegou a mais e está devendo" : "Tudo acertado") + "</div></section>" + pp.html +
     '<section class="card"><div class="stats">' + statPn("Ganhou (receita)", brl(x.ganhou), "pos") + statPn("Recebeu", brl(x.recebeu), "neg") + statPn("Vales", brl(x.vales), "neg") + statPn("Serviços", f.ajud.length + f.carreg.length + f.motor.length + (p.tipo === "vendedor" ? " + " + String(f.diasTrab).replace(".", ",") + " dia(s)" : "")) + "</div>" +
     (Math.abs(x.inicial) > 0.004 ? '<p class="hint">Vinha de antes: <b class="' + corSaldo(x.inicial) + '">' + txtSaldo(x.inicial) + "</b></p>" : "") + "</section>" +
     '<section class="card"><h2>Últimas 8 semanas</h2>' + legPn([["var(--ok)", "Ganhou"], ["var(--danger)", "Recebeu"]]) + P.barrasDuplas(sem, "var(--ok)", "var(--danger)", "ganhou", "recebeu") + "</section>" +
     (comp.total ? '<section class="card"><h2>De onde vem o que ganhou</h2><div class="pn-pz-box">' + P.pizza(comp, 170, "ganhou") + "</div>" + P.legenda(comp) + "</section>" : "") +
-    '<section class="card"><h2>Extrato · ' + esc(pp.rot) + '</h2><p class="hint">Mais novo em cima. Verde é o que ele ganhou, vermelho é o que recebeu ou pegou de vale. Embaixo de cada valor, o saldo dele depois daquela linha.</p>' +
+    '<section class="card"><h2>Extrato · ' + esc(pp.rot) + '</h2><p class="hint">Mais novo em cima. Verde é o que ele ganhou, vermelho é o que recebeu ou pegou de vale. Embaixo de cada valor, o saldo dele depois daquela linha. Segure o dedo numa linha (ou toque duas vezes) pra corrigir.</p>' +
     (linhas.length ? linhas.map(l => { const det = l.nome.includes("·") ? l.nome.replace(/^[^·]*·\s?/, "") : l.nome.replace(/^(Diária|Vale|Pagamento)\s?/, "");
-      return '<div class="pn-ext ' + (l.v >= 0 ? "g" : "r") + '"><div class="grow"><div><span class="d">' + diaCurto(l.dia) + '</span> <span class="chip ' + (l.v >= 0 ? "green" : "red") + '">' + tipos[l.tipo] + "</span></div>" + (det ? '<div class="muted trunc" style="font-size:13px;margin-top:2px">' + esc(det) + "</div>" : "") + '</div><div class="vv"><b class="' + (l.v >= 0 ? "pos" : "neg") + '">' + (l.v >= 0 ? "+" : "−") + brl(Math.abs(l.v)) + '</b><span class="sd ' + corSaldo(l.saldo) + '">saldo ' + brl0(l.saldo) + "</span></div></div>"; }).join("") : '<p class="muted">Nada neste período.</p>') + "</section>" +
+      const ed = l.tipo === "descarga" ? ' data-longo="pn-ed-desc" data-c="' + l.cid + '" data-p="' + p.id + '"' : l.cid ? ' data-longo="pn-ed-viag" data-c="' + l.cid + '"' : l.id ? ' data-longo="editar" data-id="' + l.id + '"' : "";
+      return '<div class="pn-ext ' + (l.v >= 0 ? "g" : "r") + '"' + ed + '><div class="grow"><div><span class="d">' + diaCurto(l.dia) + '</span> <span class="chip ' + (l.v >= 0 ? "green" : "red") + '">' + tipos[l.tipo] + "</span></div>" + (det ? '<div class="muted trunc" style="font-size:13px;margin-top:2px">' + esc(det) + "</div>" : "") + '</div><div class="vv"><b class="' + (l.v >= 0 ? "pos" : "neg") + '">' + (l.v >= 0 ? "+" : "−") + brl(Math.abs(l.v)) + '</b><span class="sd ' + corSaldo(l.saldo) + '">saldo ' + brl0(l.saldo) + "</span></div></div>"; }).join("") : '<p class="muted">Nada neste período.</p>') + "</section>" +
     conferenciaHtml(f, pp.de, pp.ate);
 }
 
@@ -1001,6 +1002,64 @@ function vPnExcel() {
     b("descarga", "Controle de Descarga", "Quem descarregou, carregou e foi motorista em " + esc(mesLabel(L.mes))) +
     b("forn", "Controle de Fornecedores", "Quanto foi comprado e pago a cada cerâmica") +
     b("manut", "Controle de Manutenções " + ano, "Manutenção do caminhão e da empresa") + irApp("planilhas", "o Excel");
+}
+
+/* ---------- saldo das contas (Visão geral). Segurar o dedo ou tocar duas vezes = corrigir o saldo ---------- */
+function saldosHtml() {
+  const sd = P.saldos(ctx(), D.saldos, hojeS()), l = Object.values(sd), tot = r2(l.reduce((t, x) => t + x.saldo, 0));
+  return '<h2 style="margin-top:16px">Saldo nas contas</h2><div class="pn-tiles pn-contas">' + l.map(x => '<button class="pn-tile" data-acao="pn-saldo-info" data-longo="pn-saldo" data-k="' + x.chave + '"><span class="l">' + esc(x.nome) + '</span><span class="v ' + (x.saldo < 0 ? "neg" : "") + '">' + (x.temRef ? brl0(x.saldo) : "—") + '</span><span class="s">' + (x.temRef ? "conferido " + diaCurto(x.conferido) + (x.n ? " + " + x.n + " mov." : "") : "toque pra colocar o saldo") + "</span></button>").join("") +
+    '<div class="pn-tile pn-tot"><span class="l">Total</span><span class="v ' + (tot < 0 ? "neg" : "pos") + '">' + brl0(tot) + '</span><span class="s">nas 3 contas</span></div></div>';
+}
+function janelaSaldo(k) {
+  const x = P.saldos(ctx(), D.saldos, hojeS())[k]; if (!x) return;
+  abrirJanela("<h2>Saldo " + esc(x.nome) + '</h2><p class="hint">' + (k === "carteira" ? "Quanto tem de dinheiro na carteira agora. Daqui pra frente o app soma o que cliente pagar em dinheiro e tira o que você lançar \"À mão\"." : "Abra o app do banco e coloque o saldo de agora. Daqui pra frente o app soma e tira os movimentos dessa conta.") + "</p>" +
+    '<div class="field"><label for="sd-v">Saldo de agora (R$)</label><input id="sd-v" inputmode="decimal" value="' + (x.temRef ? String(x.saldo).replace(".", ",") : "") + '"></div><div class="btns"><button class="pri" data-acao="pn-saldo-ok" data-k="' + k + '">Salvar</button><button data-acao="fechar">Cancelar</button></div>');
+}
+async function salvarSaldo(k, v) {
+  const novo = Object.assign({}, D.saldos, { [k]: { data: hojeS(), saldo: r2(v), em: new Date().toISOString() } });
+  const r = await sb.from("config").upsert({ chave: "saldos", dados: novo }, { onConflict: "chave" });
+  if (r.error) { erro = "Não deu pra salvar o saldo. Confira a internet."; return false; }
+  D.saldos = novo; return true;
+}
+
+/* ---------- corrigir descarga e motorista (o mesmo que o app da Tijolos grava: os dois apps ficam iguais) ---------- */
+function janelaDescarga(cid, pid) {
+  const c = cargaDe(cid), a = D.ajudantes.find(x => x.carga_id === cid && x.pessoa_id === pid); if (!c) return;
+  const ops = D.pessoas.filter(p => p.ativo !== false || p.id === pid).map(p => '<option value="' + p.id + '"' + (p.id === pid ? " selected" : "") + ">" + esc(p.nome) + "</option>").join("");
+  abrirJanela("<h2>Descarga de " + diaCurto(c.data) + '</h2><p class="muted">' + esc(c.entregas.map(e => e.cliente || "Sem nome").join(", ")) + "</p>" +
+    '<div class="grid2"><div class="field"><label for="dc-p">Quem descarregou</label><select id="dc-p">' + ops + '</select></div><div class="field"><label for="dc-v">Valor (R$)</label><input id="dc-v" inputmode="decimal" value="' + String(a ? a.valor : 0).replace(".", ",") + '"></div></div>' +
+    '<p class="hint">Muda também no app da Tijolos.</p><div class="btns"><button class="pri" data-acao="dc-ok" data-c="' + cid + '" data-p="' + pid + '">Salvar</button><button data-acao="fechar">Cancelar</button></div><div class="btns"><button class="danger small" data-acao="dc-tirar" data-c="' + cid + '" data-p="' + pid + '">Não descarregou essa carga</button></div>');
+}
+async function salvarDescargaPn(cid, pidAntigo, pidNovo, valor) {
+  if (pidNovo !== pidAntigo && D.ajudantes.some(x => x.carga_id === cid && x.pessoa_id === pidNovo)) { alert("Essa pessoa já está nessa descarga."); return false; }
+  if (pidAntigo) { const d = await sb.from("fin_carga_ajudantes").delete().eq("carga_id", cid).eq("pessoa_id", pidAntigo); if (d.error) return false; }
+  if (pidNovo) { const i = await sb.from("fin_carga_ajudantes").upsert({ carga_id: cid, pessoa_id: pidNovo, valor: r2(valor) }, { onConflict: "carga_id,pessoa_id" }); if (i.error) return false; }
+  await sb.from("fin_cargas_info").upsert({ carga_id: cid, ajudantes_ok: true }, { onConflict: "carga_id" });
+  return true;
+}
+function janelaViagem(cid) {
+  const c = cargaDe(cid); if (!c) return;
+  const v = R.viagem(ctx(), c), cr = v.carregamento || {}, en = cr.entrega || {}, car = Array.isArray(cr.carregadores) ? cr.carregadores : cr.quem ? [cr.quem] : [], din = x => (+x ? String(+x).replace(".", ",") : "");
+  const nomes = '<datalist id="vg-nomes">' + [euNome()].concat(D.pessoas.map(p => p.nome)).map(n => '<option value="' + esc(n) + '">').join("") + "</datalist>";
+  const f = (id, rot, val, extra) => '<div class="field"><label for="' + id + '">' + rot + '</label><input id="' + id + '" value="' + esc(val) + '" ' + (extra || "") + "></div>";
+  abrirJanela("<h2>Viagem de " + diaCurto(c.data) + '</h2><p class="muted">' + esc(c.entregas.map(e => e.cliente || "Sem nome").join(", ")) + "</p>" + nomes +
+    '<div class="grid2">' + f("vg-mot", "Motorista na carregada", cr.motorista || "", 'list="vg-nomes"') + f("vg-motv", "Ganhou (R$)", din(cr.motoristaValor), 'inputmode="decimal"') +
+    f("vg-ent", "Motorista na entrega", en.motorista || "", 'list="vg-nomes"') + f("vg-entv", "Ganhou (R$)", din(en.valor), 'inputmode="decimal"') + "</div>" +
+    f("vg-car", "Quem carregou (separe por vírgula)", car.join(", "), 'list="vg-nomes"') + f("vg-val", "Pago pra carregar (R$, dividido entre eles)", din(cr.valor), 'inputmode="decimal"') +
+    '<p class="hint">Escreva o nome igual ao cadastro. "' + esc(euNome()) + '" é você. Muda também no app da Tijolos.</p><div class="btns"><button class="pri" data-acao="vg-ok" data-c="' + v.principal + '">Salvar</button><button data-acao="fechar">Cancelar</button></div>');
+}
+async function salvarViagemPn(cid) {
+  const c = cargaDe(cid), v = R.viagem(ctx(), c), cr = Object.assign({}, v.carregamento || {}), num = id => { const t = valorDe(id).trim(); if (!t) return 0; const n = parseValor(t); return n >= 0 ? r2(n) : NaN; };
+  const mv = num("vg-motv"), ev = num("vg-entv"), val = num("vg-val");
+  if ([mv, ev, val].some(Number.isNaN)) { alert("Os valores têm que ser números."); return false; }
+  const car = valorDe("vg-car").split(",").map(x => x.trim()).filter(Boolean).slice(0, 4);
+  Object.assign(cr, { motorista: valorDe("vg-mot").trim(), motoristaValor: mv, entrega: { motorista: valorDe("vg-ent").trim(), valor: ev }, carregadores: car, valor: val, fornecedor: !car.length && !val ? !!cr.fornecedor : false });
+  delete cr.quem; cr.em = cr.em || hojeS();
+  // nome que não bate com ninguém (nem com você) avisa antes de salvar: é assim que um pagamento vai pra pessoa errada
+  const soltos = [cr.motorista, cr.entrega.motorista].concat(car).filter(n => n && !Equipe.quem(n, D.pessoas, euNome()));
+  if (soltos.length && !confirm("Não achei no cadastro: " + soltos.join(", ") + ". Vai contar como alguém de fora (não entra na ficha de ninguém). Salvar assim?")) return false;
+  const r = await sb.from("carga_viagem").upsert({ carga_id: v.principal, viagem: v.junta ? v.chave : v.principal, carregamento: cr, atualizado_em: new Date().toISOString() }, { onConflict: "carga_id" });
+  return !r.error;
 }
 
 /* perguntas do app em janela, por cima do Painel (igual o alerta de entrega) */
@@ -1262,6 +1321,13 @@ async function acao(a, ds, alvo) {
     case "pn-vista": L.pnVista = ds.v || ""; L.pnDia = null; L.pnPessoa = null; salvarLocal(); render(); window.scrollTo(0, 0); return;
     case "pn-pessoa": L.pnVista = "pessoas"; L.pnPessoa = ds.p || null; salvarLocal(); render(); window.scrollTo(0, 0); return;
     case "pn-per": L[ds.k] = ds.v; if (ds.v === "semana" && !L.pnSemana) L.pnSemana = R.segunda(hojeS()); salvarLocal(); render(); return;
+    case "pn-saldo": case "pn-saldo-info": janelaSaldo(ds.k); return;
+    case "pn-saldo-ok": { const v = parseValor(valorDe("sd-v")); if (!isFinite(v)) { alert("Coloque o saldo."); return; } if (await salvarSaldo(ds.k, v)) { fecharJanela(); msg = "Saldo salvo."; } render(); return; }
+    case "pn-ed-desc": janelaDescarga(ds.c, ds.p); return;
+    case "dc-ok": { const v = parseValor(valorDe("dc-v")); if (!(v >= 0)) { alert("Coloque o valor."); return; } if (await salvarDescargaPn(ds.c, ds.p, valorDe("dc-p"), v)) { fecharJanela(); await carregar(); msg = "Descarga corrigida."; } else erro = "Não deu pra salvar. Confira a internet."; render(); return; }
+    case "dc-tirar": if (!confirm("Tirar essa pessoa da descarga dessa carga?")) return; if (await salvarDescargaPn(ds.c, ds.p, null, 0)) { fecharJanela(); await carregar(); msg = "Tirei da descarga."; } else erro = "Não deu pra salvar. Confira a internet."; render(); return;
+    case "pn-ed-viag": janelaViagem(ds.c); return;
+    case "vg-ok": if (await salvarViagemPn(ds.c)) { fecharJanela(); await carregar(); msg = "Viagem corrigida."; render(); } return;
     case "pn-ficha": L.tab = "pessoas"; L.pessoa = ds.p; msg = ""; salvarLocal(); render(); window.scrollTo(0, 0); return;
     case "pn-semana": L.pnSemana = addDias(L.pnSemana || R.segunda(hojeS()), +ds.n); L.pnDia = null; salvarLocal(); render(); return;
     case "pn-ir-semana": L.pnSemana = ds.d; L.pnVista = ""; L.pnDia = null; salvarLocal(); render(); window.scrollTo(0, 0); return;
@@ -1597,6 +1663,8 @@ document.addEventListener("pointerdown", e => {
 document.addEventListener("pointermove", e => { if (toqueLongo && Math.hypot(e.clientX - toqueLongo.x, e.clientY - toqueLongo.y) > 10) cancelarLongo(); });
 ["pointerup", "pointercancel"].forEach(t => document.addEventListener(t, cancelarLongo));
 document.addEventListener("contextmenu", e => { if (e.target.closest("[data-longo]")) e.preventDefault(); });
+// toque duplo faz o mesmo que segurar o dedo
+document.addEventListener("dblclick", e => { const el = e.target.closest("[data-longo]"); if (!el) return; e.preventDefault(); cancelarLongo(); acao(el.dataset.longo, el.dataset, el); });
 document.addEventListener("click", e => {
   if (ignorarClique) { ignorarClique = false; e.preventDefault(); return; }
   const nova = Aparencia.clique(e.target);

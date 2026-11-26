@@ -13,6 +13,23 @@
   const diaMov = m => ymd(new Date(m.quando));
   const norm = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/gi, " ").replace(/\s+/g, " ").trim().toLowerCase();
   const mesmoNome = (a, b) => { const x = norm(a), y = norm(b); return !!x && !!y && (x === y || x.split(" ")[0] === y || y.split(" ")[0] === x); };
+  /* quem é o nome digitado no app da Tijolos (motorista, quem carregou)?
+     Antes bastava o primeiro nome bater: "Bruno" (o dono) caía no ajudante "Bruno zoiao" e ele ganhava as viagens do dono.
+     Agora: nome igual ao cadastro → essa pessoa. Nome do dono (ou o primeiro nome dele) → o dono, nunca um funcionário.
+     Primeiro nome só vale quando aponta pra uma pessoa só e não é o do dono. Senão, ninguém (não paga a pessoa errada).
+     Devolve o id da pessoa, "eu" (o dono) ou null. */
+  function quem(nome, pessoas, eu) {
+    const x = norm(nome); if (!x) return null;
+    const ps = (pessoas || []).filter(p => norm(p.nome)), exatas = ps.filter(p => norm(p.nome) === x);
+    if (exatas.length === 1) return exatas[0].id;
+    if (exatas.length > 1) return null;
+    const e = norm(eu), e1 = e.split(" ")[0];
+    if (e && (x === e || x === e1)) return "eu";
+    const x1 = x.split(" ")[0];
+    if (!e || x1 === e1) return null; // sem saber quem é o dono, ou começa com o nome dele: só vale o nome igual ao cadastro
+    const pelo1 = ps.filter(p => { const n = norm(p.nome); return n.split(" ")[0] === x || x1 === n; });
+    return pelo1.length === 1 ? pelo1[0].id : null;
+  }
   const num = v => isFinite(+v) && +v > 0 ? +v : 0;
   const totalEntrega = e => r2((+e.mil || 0) * (+e.preco || 0) + (+e.frete || 0));
 
@@ -44,6 +61,14 @@
 
   /* ficha: de/ate = período (AAAA-MM-DD). O saldo usa tudo desde o início da pessoa.
      ctx = { cargas, viag, ajudantes, faltas, presencas, movs } */
+  const PAGA = /funcion|ajudant|descarg|carregad|motorist|sal[aá]rio|vale|comiss|diari/i;
+  function ehPagamento(ctx, m) {
+    if (m.origem === "vale" || !m.categoria_id || !(ctx.cats || []).length) return true;
+    const c = ctx.cats.find(x => x.id === m.categoria_id);
+    return !c || PAGA.test(c.nome || "");
+  }
+  /* ajudante "de fora" (avulso): recebe na hora, no dia do serviço. O custo entra na viagem, mas não fica saldo a pagar. */
+  const avulso = p => /\bde fora\b|\bavulso\b/i.test(norm(p.nome)) || !!p.avulso;
   function ficha(ctx, p, de, ate) {
     const calc = (a, b, tudo) => {
       const ini = p.inicio && a < dia(p.inicio) ? dia(p.inicio) : a;
@@ -60,15 +85,16 @@
         diarias = diasTrab * (+p.salario_mes || 0) / DIAS_MES;
       }
       const vs = viagens(ctx, ini, b);
-      const motor = []; vs.forEach(o => RV.motoristas(o.cr).forEach(m => { if (mesmoNome(m.nome, p.nome)) motor.push(Object.assign({ c: o.c, dia: o.dia }, m)); }));
+      const motor = []; vs.forEach(o => RV.motoristas(o.cr).forEach(m => { if (quem(m.nome, ctx.pessoas || [p], ctx.eu) === p.id) motor.push(Object.assign({ c: o.c, dia: o.dia }, m)); }));
       const ganhoMot = motor.reduce((s, m) => s + m.valor, 0);
       // carregada: o valor pago pra carregar é dividido entre quem carregou
-      const carreg = []; vs.forEach(o => { const cr = o.cr, quem = RV.carregadores(cr), v = RV.valorCarregamento(cr);
-        if (v && quem.some(n => mesmoNome(n, p.nome))) carreg.push({ c: o.c, dia: o.dia, com: quem.length, valor: r2(v / quem.length) }); });
+      const carreg = []; vs.forEach(o => { const cr = o.cr, quem_ = RV.carregadores(cr), v = RV.valorCarregamento(cr);
+        if (v && quem_.some(n => quem(n, ctx.pessoas || [p], ctx.eu) === p.id)) carreg.push({ c: o.c, dia: o.dia, com: quem_.length, valor: r2(v / quem_.length) }); });
       const ganhoCarreg = carreg.reduce((s, x) => s + x.valor, 0);
       /* vale antigo (pego antes do sistema): entra no saldo geral mesmo sendo de antes do início, como dívida dele */
       const ehVale = m => m.origem === "vale";
-      const pix = (ctx.movs || []).filter(m => m.tipo === "saida" && !m.ignorado && m.pessoa_id === p.id && diaMov(m) <= b && (diaMov(m) >= ini || (tudo && ehVale(m))));
+      // pagamento é Pix/vale de pessoal; um gasto marcado com o nome dele (ex.: almoço da viagem) não é pagamento pra ele
+      const pix = (ctx.movs || []).filter(m => m.tipo === "saida" && !m.ignorado && m.pessoa_id === p.id && ehPagamento(ctx, m) && diaMov(m) <= b && (diaMov(m) >= ini || (tudo && ehVale(m))));
       const vales = pix.filter(ehVale);
       const recebeu = pix.reduce((s, m) => s + +m.valor, 0);
       const vendas = p.tipo === "vendedor" ? (ctx.cargas || []).filter(c => norm(c.vendedor) === norm(p.nome) && dia(c.data) >= ini && dia(c.data) <= b) : [];
@@ -78,6 +104,7 @@
     };
     const periodo = calc(de, ate), geral = calc(p.inicio ? dia(p.inicio) : de, ate, true);
     // saldo > 0: o Bruno deve pra ele; saldo < 0: ele recebeu adiantado (está devendo)
+    if (avulso(p)) return Object.assign(periodo, { avulso: true, recebeu: periodo.ganhou, saldo: 0, valesAntigos: [], totalValesAntigos: 0 });
     return Object.assign(periodo, { saldo: r2(geral.ganhou - geral.recebeu), valesAntigos: geral.vales, totalValesAntigos: geral.totalVales });
   }
 
@@ -110,6 +137,6 @@
     return { titulo: "Resumo da semana (" + dm(de) + " a " + dm(ate) + ")", texto: l.join("\n"), ficha: f, conferir: cf };
   }
 
-  const api = { FUNCOES, TURNOS, TIPOS, DIAS_MES, diasUteis, semana, ficha, conferir, resumoSemana, saldoTexto, mesmoNome, addDias, ymd, pd };
+  const api = { FUNCOES, TURNOS, TIPOS, DIAS_MES, diasUteis, semana, ficha, conferir, resumoSemana, saldoTexto, mesmoNome, quem, avulso, ehPagamento, addDias, ymd, pd };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Equipe = api;
 })(typeof window !== "undefined" ? window : globalThis);
