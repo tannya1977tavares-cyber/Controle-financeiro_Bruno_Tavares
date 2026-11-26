@@ -16,12 +16,31 @@ const mesCurto = k => MESES[+k.slice(5, 7) - 1] + "/" + k.slice(2, 4);
 
 /* ---------- contas ---------- */
 
+/* dois jeitos de ver o lucro da empresa:
+   "caixa"  = o que entrou menos o que saiu do banco (o tijolo só conta quando você paga a cerâmica);
+   "tijolo" = já desconta o tijolo de cada carga no dia em que foi carregada (só o que foi carregado de fato),
+              mesmo sem ter pago ainda; os pagamentos à cerâmica saem da conta pra não descontar duas vezes. */
+let MODO = "caixa";
+const definirModo = m => { MODO = m === "tijolo" ? "tijolo" : "caixa"; };
+const ehTijolo = nome => /^compra de tijolo/i.test(nome || "");
+function tijoloCarregado(ctx, de, ate) {
+  return r2(ctx.cargas.filter(c => { const d = String(c.data).slice(0, 10); return d >= de && d <= ate; }).reduce((s, c) => s + R.resumoCarga(ctx, c).tijolo, 0));
+}
+function empresa(ctx, de, ate, eu) {
+  const e = R.liquido(ctx, de, ate, eu).empresa;
+  if (MODO !== "tijolo") return e;
+  const pagoCer = r2(e.saidas.filter(x => ehTijolo(x.nome)).reduce((s, x) => s + x.v, 0)), tij = tijoloCarregado(ctx, de, ate);
+  const saidas = e.saidas.filter(x => !ehTijolo(x.nome)).concat(tij ? [{ nome: "Tijolo das cargas (carregado)", v: tij }] : []).sort((a, b) => b.v - a.v);
+  const saiu = r2(e.saiu - pagoCer + tij);
+  return { entrou: e.entrou, saiu, liquido: r2(e.entrou - saiu), entradas: e.entradas, saidas, pagoCer, tijolo: tij };
+}
+
 /* lucro líquido da empresa dia a dia na semana (segunda a domingo), acumulando: a linha sobe com o que entra e desce com as despesas */
 function semana(ctx, seg, hoje, eu) {
   const dias = []; let acum = 0;
   for (let k = 0; k < 7; k++) {
     const dia = R.addDias(seg, k), futuro = dia > hoje;
-    const x = futuro ? { entrou: 0, saiu: 0, liquido: 0, saidas: [] } : R.liquido(ctx, dia, dia, eu).empresa;
+    const x = futuro ? { entrou: 0, saiu: 0, liquido: 0, saidas: [] } : empresa(ctx, dia, dia, eu);
     if (!futuro) acum = r2(acum + x.liquido);
     dias.push({ dia, nome: DIAS[k], entrou: x.entrou, saiu: x.saiu, liquido: x.liquido, acum: futuro ? null : acum, futuro });
   }
@@ -45,7 +64,7 @@ function semanas(ctx, seg, n, hoje, eu) {
   const out = [];
   for (let k = n - 1; k >= 0; k--) {
     const de = R.addDias(seg, -7 * k), ate = R.addDias(de, 6);
-    const e = de > hoje ? { entrou: 0, saiu: 0, liquido: 0 } : R.liquido(ctx, de, ate < hoje ? ate : hoje, eu).empresa;
+    const e = de > hoje ? { entrou: 0, saiu: 0, liquido: 0 } : empresa(ctx, de, ate < hoje ? ate : hoje, eu);
     out.push({ de, ate, entrou: e.entrou, saiu: e.saiu, liquido: e.liquido, atual: k === 0 });
   }
   return out;
@@ -61,7 +80,7 @@ function fatias(itens, max) {
   return { total, fatias: f.map(x => Object.assign({}, x, { pct: total ? x.v / total : 0 })) };
 }
 function gastos(ctx, de, ate, eu, escopo) {
-  const l = R.liquido(ctx, de, ate, eu)[escopo === "pessoal" ? "pessoal" : "empresa"];
+  const l = escopo === "pessoal" ? R.liquido(ctx, de, ate, eu).pessoal : empresa(ctx, de, ate, eu);
   return fatias(l.saidas.map(x => ({ nome: x.nome, v: x.v })));
 }
 
@@ -70,7 +89,7 @@ function meses(ctx, mes, n, hoje, eu) {
   const out = [];
   for (let k = n - 1; k >= 0; k--) {
     const m = addMes(mes, -k), de = m + "-01", fim = fimMes(m), ate = fim < hoje ? fim : hoje;
-    const e = de > hoje ? { entrou: 0, saiu: 0, liquido: 0 } : R.liquido(ctx, de, ate, eu).empresa;
+    const e = de > hoje ? { entrou: 0, saiu: 0, liquido: 0 } : empresa(ctx, de, ate, eu);
     out.push({ mes: m, nome: mesCurto(m), entrou: e.entrou, saiu: e.saiu, liquido: e.liquido });
   }
   return out;
@@ -212,6 +231,6 @@ function barrasH(itens, cor) {
     '<div class="bar" style="width:' + Math.max(2, Math.abs(x.v) / mx * 100) + "%;background:" + (x.v < 0 ? "var(--danger)" : cor || "var(--brand)") + '"></div></div>').join("");
 }
 
-const api = { semana, ritmo, semanas, fatias, gastos, meses, receber, contas, cargas, ceramicas, graficoSemana, pizza, legenda, barrasSemanas, barrasMeses, barrasH, curto, mesCurto, addMes, DIAS };
+const api = { definirModo, empresa, tijoloCarregado, semana, ritmo, semanas, fatias, gastos, meses, receber, contas, cargas, ceramicas, graficoSemana, pizza, legenda, barrasSemanas, barrasMeses, barrasH, curto, mesCurto, addMes, DIAS };
 if (typeof module !== "undefined" && module.exports) module.exports = api; else raiz.Painel = api;
 })(typeof window !== "undefined" ? window : globalThis);

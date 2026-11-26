@@ -787,6 +787,7 @@ function cartaoGastos(grande) {
 
 function vPainel() {
   const v = L.pnVista || "";
+  P.definirModo(L.pnModo);
   const vistas = { gastos: vPnGastos, semanas: vPnSemanas, meses: vPnMeses, receber: vPnReceber, contas: vPnContas, cargas: vPnCargas, ceramicas: vPnCeramicas };
   if (v === "gastos-pes") { L.pnVista = "gastos"; L.pnGEsc = "pessoal"; L.pnGPer = "mes"; L.mes = hojeS().slice(0, 7); salvarLocal(); return vPnGastos(); }
   if (vistas[v]) return vistas[v]();
@@ -800,6 +801,8 @@ function vPainel() {
   const sel = L.pnDia && s.dias.find(d => d.dia === L.pnDia && !d.futuro);
   let h = '<section class="card pn-hero"><div class="row"><h2 style="margin:0">Lucro líquido da semana</h2><button class="small ghost" data-acao="pn-meta">Meta ' + brl0(meta) + "</button></div>" +
     '<div class="nav"><button class="small" data-acao="pn-semana" data-n="-7" aria-label="Semana anterior">‹</button><b>' + diaCurto(seg) + " a " + diaCurto(addDias(seg, 6)) + '</b><button class="small" data-acao="pn-semana" data-n="7" aria-label="Próxima semana">›</button></div>' +
+    filtrosPn("pn-modo", L.pnModo === "tijolo" ? "tijolo" : "caixa", [["caixa", "Pelo banco"], ["tijolo", "Já descontando o tijolo"]]) +
+    (L.pnModo === "tijolo" ? '<p class="hint">Desconta o tijolo de cada carga no dia em que foi carregada (só o que foi carregado), mesmo sem ter pago a cerâmica. O que você paga à cerâmica não é descontado de novo.</p>' : "") +
     '<div class="pn-big"><span class="' + (s.total >= 0 ? "pos" : "neg") + '">' + brl0(s.total) + '</span><small>de ' + brl0(meta) + " · " + rt.pct + "%</small></div>" +
     '<div class="pn-prog"><i style="width:' + Math.min(100, rt.pct) + '%"></i></div><p style="margin:8px 0 0">' + status + "</p>" +
     (atual && rt.previsao != null && !rt.batida ? '<p class="hint">No ritmo de agora, a semana fecha em ' + brl0(rt.previsao) + (rt.previsao >= meta ? ": dá pra bater." : ".") + "</p>" : "") +
@@ -810,9 +813,9 @@ function vPainel() {
     (s.dias.some(d => !d.futuro) && R.resumoPeriodo(cx, seg, addDias(seg, 6)).pendentes ? '<p class="hint" style="color:var(--warn)">Tem movimento da semana esperando sua resposta: a linha fica certa depois que você responder.</p>' : "") + "</section>";
 
   // indicadores rápidos
-  const mes = hoje.slice(0, 7), lm = R.liquido(cx, mes + "-01", hoje, eu), rc = P.receber(cx), ct = P.contas(cx, hoje, 6), cg = P.cargas(cx, mes), ce = P.ceramicas(cx, hoje);
+  const mes = hoje.slice(0, 7), lm = R.liquido(cx, mes + "-01", hoje, eu), rc = P.receber(cx), ct = P.contas(cx, hoje, 6), cg = P.cargas(cx, mes), ce = P.ceramicas(cx, hoje), em = P.empresa(cx, mes + "-01", hoje, eu);
   h += '<h2 style="margin-top:16px">Visão geral</h2><div class="pn-tiles">' +
-    tilePn("meses", "Lucro de " + esc(mesLabel(mes).split(" ")[0].toLowerCase()), brl0(lm.empresa.liquido), "entrou " + brl0(lm.empresa.entrou) + " · saiu " + brl0(lm.empresa.saiu), lm.empresa.liquido >= 0 ? "pos" : "neg") +
+    tilePn("meses", "Lucro de " + esc(mesLabel(mes).split(" ")[0].toLowerCase()), brl0(em.liquido), "entrou " + brl0(em.entrou) + " · saiu " + brl0(em.saiu), em.liquido >= 0 ? "pos" : "neg") +
     tilePn("receber", "Falta receber", brl0(rc.total), rc.lista.length + " cliente(s)" + (rc.prazo ? " · " + brl0(rc.prazo) + " no prazo" : ""), "warnc") +
     tilePn("contas", "Contas em 30 dias", brl0(ct.prox30), ct.vencidas ? '<span class="neg">' + brl0(ct.vencidas) + " vencidas</span>" : "nenhuma vencida", ct.vencidas ? "neg" : "") +
     tilePn("cargas", "Cargas do mês", brl0(cg.lucro), cg.lista.length + " carga(s) · margem " + pct(cg.margem), cg.lucro >= 0 ? "pos" : "neg") +
@@ -878,6 +881,16 @@ function mostrarPerguntaSePrecisar() {
   if (pend.length) { abrirJanela('<div data-pop="perg"><h2>Preciso de você' + (pend.length > 1 ? " (1 de " + pend.length + ")" : "") + "</h2>" + perguntaHtml(pend[0]) + depois + "</div>"); return; }
   const aj = R.cargasSemAjudante(ctx(), hojeS(), L.desde);
   if (aj.length) abrirJanela('<div data-pop="perg">' + ajudantesHtml(aj[0]) + depois + "</div>");
+}
+
+function janelaCategoriaPn() {
+  const de = L.pnSemana || R.segunda(hojeS()), ate = addDias(de, 6), x = P.empresa(ctx(), de, ate, euNome());
+  const lista = (itens, cls) => itens.length ? itens.map(i => '<div class="row"><span class="grow">' + esc(i.nome) + '</span><b class="' + cls + '">' + brl0(i.v) + "</b></div>").join("") : '<p class="muted">Nada.</p>';
+  abrirJanela("<h2>Tijolos Tavares · " + diaCurto(de) + " a " + diaCurto(ate) + '</h2><p class="muted">Já descontando o tijolo das cargas</p>' +
+    '<h3 style="margin-top:10px">Entrou · ' + brl0(x.entrou) + "</h3>" + lista(x.entradas, "pos") + '<h3 style="margin-top:14px">Saiu · ' + brl0(x.saiu) + "</h3>" + lista(x.saidas, "neg") +
+    '<div class="row" style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px"><b>Líquido</b><b class="' + (x.liquido >= 0 ? "pos" : "neg") + '" style="font-size:22px">' + brl0(x.liquido) + "</b></div>" +
+    (x.pagoCer ? '<p class="hint">Pago às cerâmicas nesta semana: ' + brl0(x.pagoCer) + ". Não entra aqui, porque o tijolo já está descontado pelas cargas.</p>" : "") +
+    '<div class="btns"><button data-acao="fechar">Fechar</button></div>');
 }
 
 function janelaTabelaSemana() {
@@ -1122,7 +1135,8 @@ async function acao(a, ds, alvo) {
     case "pn-dia": L.pnDia = L.pnDia === ds.d ? null : ds.d; render(); return;
     case "pn-dia-movs": janelaDiaMovs(ds.d); return;
     case "pn-tabela": janelaTabelaSemana(); return;
-    case "liq-abrir-pn": L.semana = L.pnSemana || R.segunda(hojeS()); salvarLocal(); janelaLiquido("empresa"); return;
+    case "pn-modo": L.pnModo = ds.v; L.pnDia = null; salvarLocal(); render(); return;
+    case "liq-abrir-pn": if (L.pnModo === "tijolo") { janelaCategoriaPn(); return; } L.semana = L.pnSemana || R.segunda(hojeS()); salvarLocal(); janelaLiquido("empresa"); return;
     case "pn-gper": L.pnGPer = ds.v; salvarLocal(); render(); return;
     case "pn-gesc": L.pnGEsc = ds.v; salvarLocal(); render(); return;
     case "pn-meta": abrirJanela('<h2>Meta de lucro da semana</h2><p class="hint">Lucro líquido da Tijolos Tavares que você quer fazer de segunda a domingo.</p><div class="field"><label for="pn-meta-v">Meta (R$)</label><input id="pn-meta-v" inputmode="decimal" value="' + String(metaSemana()).replace(".", ",") + '"></div><div class="btns"><button class="pri" data-acao="pn-meta-ok">Salvar</button><button data-acao="fechar">Cancelar</button></div>'); return;
