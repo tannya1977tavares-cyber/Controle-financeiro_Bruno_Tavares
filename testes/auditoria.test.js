@@ -33,4 +33,16 @@ const cs = Object.assign({}, ctx, { movs: [{ tipo: "entrada", valor: 500, quando
   fin: { "k1|0": { situacao: "dinheiro", pago_em: "2026-11-25", valor_recebido: 800 } } });
 const sd = P.saldos(cs, { nubank: { data: "2026-11-24", saldo: 1000 }, carteira: { data: "2026-11-24", saldo: 100 } }, "2026-11-26");
 assert.strictEqual(sd.nubank.saldo, 1500); assert.strictEqual(sd.infinitepay.temRef, false); assert.ok(sd.carteira.saldo > 60);
-console.log("auditoria (nomes, de fora, cerâmica, saldos): tudo certo");
+// salário só se estiver no cadastro; comissão sobre o que vendeu; acerto entra uma vez
+const sem = R.ficha(ctx, { id: "v", nome: "Pai", tipo: "vendedor", inicio: "2026-11-01", salario_mes: 0 }, "2026-11-01", "2026-11-26");
+assert.strictEqual(sem.diarias, 0);
+const com = R.ficha(ctx, { id: "a2", nome: "Zé", tipo: "ajudante", inicio: "2026-11-01", salario_mes: 2000 }, "2026-11-01", "2026-11-26");
+assert.ok(com.diarias > 0);
+const cv = Object.assign({}, ctx, { cargas: ctx.cargas.map(c => Object.assign({ vendedor: "Rafael" }, c)), movs: [{ id: 9, tipo: "saida", valor: 1200, quando: "2026-11-12T12:00:00", pessoa_id: "r", categoria_id: "fu" }] });
+const raf = Object.assign({}, ps[4], { comissao_pct: 1, acerto: 600, acerto_obs: "antes do app" });
+const fr = R.ficha(cv, raf, "2026-10-01", "2026-11-26");
+assert.strictEqual(fr.comissao, 90); assert.strictEqual(fr.acerto, 600); assert.strictEqual(fr.saldo, 90 + 600 - 1200);
+assert.strictEqual(R.ficha(cv, raf, "2026-11-01", "2026-11-26").acerto, 0); // depois do início não repete
+const ex = P.extratoPessoa(cv, raf, "2026-10-01", "2026-11-26");
+assert.strictEqual(ex.inicial, 0); assert.ok(ex.linhas.some(x => x.tipo === "acerto")); assert.ok(ex.linhas.some(x => x.tipo === "comissao"));
+console.log("auditoria (nomes, de fora, cerâmica, saldos, salário/comissão/acerto): tudo certo");
