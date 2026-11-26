@@ -37,3 +37,21 @@ assert.ok(P.graficoSemana(s, 3000, P.semana(ctx, "2026-11-16", "2026-11-25", "Br
 assert.ok(P.pizza(g).includes("stroke-dasharray")); assert.ok(P.barrasSemanas(ss, 3000).includes("✓"));
 assert.strictEqual(P.curto(3250), "R$ 3,3 mil"); assert.strictEqual(P.curto(-850), "−R$ 850");
 console.log("painel: tudo certo");
+/* com o tijolo das cargas: desconta o custo do que foi carregado e não o pagamento à cerâmica */
+{
+  const c2 = JSON.parse(JSON.stringify(ctx));
+  c2.cats.push({ id: "t", nome: "Compra de tijolo (cerâmica)", tipo: "saida", escopo: "empresa" });
+  c2.cargas.push({ id: "k2", data: "2026-11-24", ceramica: "anapolina", entregas: [{ cliente: "Rui", mil: 5, preco: 1000, carregado: { mil: 4 } }] });
+  c2.admin = { k2: { custos: [600] } };
+  c2.movs.push(mv("saida", 1000, "2026-11-25", "t", "empresa"));
+  P.definirModo("caixa");
+  assert.deepStrictEqual(P.semana(c2, "2026-11-23", "2026-11-25", "Bruno").dias.slice(0, 3).map(d => d.acum), [1500, 4000, 2700]);
+  P.definirModo("tijolo");
+  // 4 mil carregados × 600 = 2.400 na terça; o Pix de 1.000 à cerâmica na quarta não conta
+  assert.deepStrictEqual(P.semana(c2, "2026-11-23", "2026-11-25", "Bruno").dias.slice(0, 3).map(d => d.acum), [1500, 1600, 1300]);
+  const e = P.empresa(c2, "2026-11-23", "2026-11-29", "Bruno");
+  assert.strictEqual(e.tijolo, 2400); assert.strictEqual(e.pagoCer, 1000);
+  assert.ok(e.saidas.some(x => x.nome === "Tijolo das cargas (carregado)")); assert.ok(!e.saidas.some(x => /^Compra de tijolo/.test(x.nome)));
+  P.definirModo("caixa");
+  console.log("painel com tijolo: tudo certo");
+}

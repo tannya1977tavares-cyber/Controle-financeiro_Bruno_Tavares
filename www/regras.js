@@ -276,7 +276,10 @@ function alertas(ctx, agora, desde) {
 
 function cargasSemAjudante(ctx, hoje, desde) {
   // pergunta uma vez por viagem (na carga principal), não por carga
-  return ctx.cargas.filter(c => { const d = String(c.data).slice(0, 10); return d <= hoje && (!desde || d >= desde) && viagem(ctx, c).principal === c.id && !(ctx.info[c.id] && ctx.info[c.id].ajudantes_ok); });
+  // o que foi anotado no app da Tijolos (descarga em qualquer carga da viagem) já responde, sem perguntar de novo
+  const resp = id => (ctx.info[id] && ctx.info[id].ajudantes_ok) || (ctx.ajudantes || []).some(a => a.carga_id === id);
+  return ctx.cargas.filter(c => { const d = String(c.data).slice(0, 10); if (d > hoje || (desde && d < desde)) return false;
+    const v = viagem(ctx, c); return v.principal === c.id && !(v.ids || [c.id]).some(resp); });
 }
 
 /* ---------- carga por carga ---------- */
